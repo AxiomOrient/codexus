@@ -1,0 +1,309 @@
+use std::time::Duration;
+
+use serde_json::Value;
+use thiserror::Error;
+use tokio::sync::broadcast::Receiver as BroadcastReceiver;
+use tokio::time::Instant;
+
+use crate::plugin::{BlockReason, HookPhase};
+use crate::runtime::core::Runtime;
+use crate::runtime::errors::{RpcError, RuntimeError};
+use crate::runtime::events::{
+    AgentMessageDeltaNotification, Envelope, TurnCancelledNotification, TurnCompletedNotification,
+    TurnFailedNotification, TurnInterruptedNotification,
+};
+use crate::runtime::hooks::RuntimeHookConfig;
+use crate::runtime::turn_lifecycle::LaggedTurnTerminal;
+use crate::runtime::turn_output::TurnStreamCollector;
+
+use super::{
+    flow::HookExecutionState, turn_error::PromptTurnErrorSignal, ApprovalPolicy, PromptAttachment,
+    ReasoningEffort, SandboxPolicy, ThreadId, TurnId, DEFAULT_REASONING_EFFORT,
+};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromptRunParams {
+    pub cwd: String,
+    pub prompt: String,
+    pub model: Option<String>,
+    pub effort: Option<ReasoningEffort>,
+    pub approval_policy: ApprovalPolicy,
+    pub sandbox_policy: SandboxPolicy,
+    /// Explicit opt-in gate for privileged sandbox usage (SEC-004).
+    /// Default stays false to preserve safe-by-default posture.
+    pub privileged_escalation_approved: bool,
+    pub attachments: Vec<PromptAttachment>,
+    pub timeout: Duration,
+    pub output_schema: Option<Value>,
+}
+
+impl PromptRunParams {
+    /// Create prompt-run params with safe defaults.
+    /// Allocation: two String allocations for cwd/prompt. Complexity: O(n), n = input lengths.
+    pub fn new(cwd: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            prompt: prompt.into(),
+            model: None,
+            effort: Some(DEFAULT_REASONING_EFFORT),
+            approval_policy: ApprovalPolicy::Never,
+            sandbox_policy: SandboxPolicy::Preset(super::SandboxPreset::ReadOnly),
+            privileged_escalation_approved: false,
+            attachments: Vec::new(),
+            timeout: Duration::from_secs(120),
+            output_schema: None,
+        }
+    }
+
+    /// Set explicit model override.
+    /// Allocation: one String. Complexity: O(model length).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Set explicit reasoning effort.
+    /// Allocation: none. Complexity: O(1).
+    pub fn with_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.effort = Some(effort);
+        self
+    }
+
+    /// Set approval policy override.
+    /// Allocation: none. Complexity: O(1).
+    pub fn with_approval_policy(mut self, approval_policy: ApprovalPolicy) -> Self {
+        self.approval_policy = approval_policy;
+        self
+    }
+
+    /// Set sandbox policy override.
+    /// Allocation: depends on sandbox payload move/clone at callsite. Complexity: O(1).
+    pub fn with_sandbox_policy(mut self, sandbox_policy: SandboxPolicy) -> Self {
+        self.sandbox_policy = sandbox_policy;
+        self
+    }
+
+    /// Explicitly approve privileged sandbox escalation for this run.
+    /// Callers are expected to set approval policy + scope alongside this flag.
+    pub fn allow_privileged_escalation(mut self) -> Self {
+        self.privileged_escalation_approved = true;
+        self
+    }
+
+    /// Set prompt timeout.
+    /// Allocation: none. Complexity: O(1).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Set one optional JSON Schema for the final assistant message.
+    pub fn with_output_schema(mut self, output_schema: Value) -> Self {
+        self.output_schema = Some(output_schema);
+        self
+    }
+
+    /// Add one generic attachment.
+    /// Allocation: amortized O(1) push. Complexity: O(1).
+    pub fn with_attachment(mut self, attachment: PromptAttachment) -> Self {
+        self.attachments.push(attachment);
+        self
+    }
+
+    /// Add one `@path` attachment.
+    /// Allocation: one String. Complexity: O(path length).
+    pub fn attach_path(self, path: impl Into<String>) -> Self {
+        self.with_attachment(PromptAttachment::AtPath {
+            path: path.into(),
+            placeholder: None,
+        })
+    }
+
+    /// Add one `@path` attachment with placeholder.
+    /// Allocation: two Strings. Complexity: O(path + placeholder length).
+    pub fn attach_path_with_placeholder(
+        self,
+        path: impl Into<String>,
+        placeholder: impl Into<String>,
+    ) -> Self {
+        self.with_attachment(PromptAttachment::AtPath {
+            path: path.into(),
+            placeholder: Some(placeholder.into()),
+        })
+    }
+
+    /// Add one remote image attachment.
+    /// Allocation: one String. Complexity: O(url length).
+    pub fn attach_image_url(self, url: impl Into<String>) -> Self {
+        self.with_attachment(PromptAttachment::ImageUrl { url: url.into() })
+    }
+
+    /// Add one local image attachment.
+    /// Allocation: one String. Complexity: O(path length).
+    pub fn attach_local_image(self, path: impl Into<String>) -> Self {
+        self.with_attachment(PromptAttachment::LocalImage { path: path.into() })
+    }
+
+    /// Add one skill attachment.
+    /// Allocation: two Strings. Complexity: O(name + path length).
+    pub fn attach_skill(self, name: impl Into<String>, path: impl Into<String>) -> Self {
+        self.with_attachment(PromptAttachment::Skill {
+            name: name.into(),
+            path: path.into(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptRunResult {
+    pub thread_id: ThreadId,
+    pub turn_id: TurnId,
+    pub assistant_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PromptRunStreamEvent {
+    AgentMessageDelta(AgentMessageDeltaNotification),
+    TurnCompleted(TurnCompletedNotification),
+    TurnFailed(TurnFailedNotification),
+    TurnInterrupted(TurnInterruptedNotification),
+    TurnCancelled(TurnCancelledNotification),
+}
+
+pub(crate) struct PromptRunStreamState {
+    pub(crate) last_turn_error: Option<PromptTurnErrorSignal>,
+    pub(crate) lagged_terminal: Option<LaggedTurnTerminal>,
+    pub(crate) final_result: Option<Result<PromptRunResult, PromptRunError>>,
+}
+
+pub(crate) struct PromptStreamCleanupState {
+    pub(crate) run_cwd: String,
+    pub(crate) run_model: Option<String>,
+    pub(crate) scoped_hooks: Option<RuntimeHookConfig>,
+    pub(crate) hook_state: Option<HookExecutionState>,
+    pub(crate) cleaned_up: bool,
+}
+
+pub struct PromptRunStream {
+    pub(crate) runtime: Runtime,
+    pub(crate) thread_id: ThreadId,
+    pub(crate) turn_id: TurnId,
+    pub(crate) live_rx: BroadcastReceiver<Envelope>,
+    pub(crate) stream: TurnStreamCollector,
+    pub(crate) state: PromptRunStreamState,
+    pub(crate) deadline: Instant,
+    pub(crate) timeout: Duration,
+    pub(crate) cleanup: PromptStreamCleanupState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptTurnTerminalState {
+    Failed,
+    CompletedWithoutAssistantText,
+}
+
+/// Semantic classification of why a prompt turn failed.
+///
+/// Agents use this to decide whether to retry, back off, or surface to operator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptTurnFailureKind {
+    /// Server rate-limited the request (HTTP 429 or equivalent).
+    /// Retry after a backoff delay.
+    RateLimit,
+    /// Account quota exhausted or no active subscription.
+    /// Retrying immediately will not help; operator action required.
+    QuotaExceeded,
+    /// Any other terminal failure.
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptTurnFailure {
+    pub terminal_state: PromptTurnTerminalState,
+    pub kind: PromptTurnFailureKind,
+    pub source_method: String,
+    pub code: Option<i64>,
+    pub message: String,
+}
+
+impl std::fmt::Display for PromptTurnFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let terminal = match self.terminal_state {
+            PromptTurnTerminalState::Failed => "failed",
+            PromptTurnTerminalState::CompletedWithoutAssistantText => {
+                "completed_without_assistant_text"
+            }
+        };
+        if let Some(code) = self.code {
+            write!(
+                f,
+                "terminal={terminal} kind={:?} source_method={} code={code} message={}",
+                self.kind, self.source_method, self.message
+            )
+        } else {
+            write!(
+                f,
+                "terminal={terminal} kind={:?} source_method={} message={}",
+                self.kind, self.source_method, self.message
+            )
+        }
+    }
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PromptRunError {
+    #[error("rpc error: {0}")]
+    Rpc(#[from] RpcError),
+    #[error("runtime error: {0}")]
+    Runtime(#[from] RuntimeError),
+    #[error("turn failed: {0}")]
+    TurnFailedWithContext(PromptTurnFailure),
+    #[error("turn failed")]
+    TurnFailed,
+    #[error("turn interrupted")]
+    TurnInterrupted,
+    #[error("turn timed out after {0:?}")]
+    Timeout(Duration),
+    #[error("turn completed without assistant text: {0}")]
+    TurnCompletedWithoutAssistantText(PromptTurnFailure),
+    #[error("assistant text is empty")]
+    EmptyAssistantText,
+    #[error("attachment not found: {0}")]
+    AttachmentNotFound(String),
+    /// A pre-hook explicitly blocked execution before any RPC was sent.
+    #[error("blocked by hook '{hook_name}' at {phase:?}: {message}")]
+    BlockedByHook {
+        hook_name: String,
+        phase: HookPhase,
+        message: String,
+    },
+}
+
+impl PromptRunError {
+    /// Returns `true` only when the account quota is exhausted (no active subscription or credits).
+    ///
+    /// Rate-limited errors ([`PromptTurnFailureKind::RateLimit`]) are **not** included here
+    /// because they are retryable with backoff. Only [`PromptTurnFailureKind::QuotaExceeded`]
+    /// means "stop and escalate to the operator".
+    ///
+    /// When this returns `true`, retrying immediately will not succeed.
+    /// Agents should stop and surface the underlying `message` to the operator.
+    pub fn is_quota_exceeded(&self) -> bool {
+        match self {
+            Self::TurnFailedWithContext(f) | Self::TurnCompletedWithoutAssistantText(f) => {
+                matches!(f.kind, PromptTurnFailureKind::QuotaExceeded)
+            }
+            _ => false,
+        }
+    }
+
+    /// Convert a raw [`BlockReason`] into [`PromptRunError::BlockedByHook`].
+    /// Allocation: clones two Strings.
+    pub(crate) fn from_block(r: BlockReason) -> Self {
+        Self::BlockedByHook {
+            hook_name: r.hook_name,
+            phase: r.phase,
+            message: r.message,
+        }
+    }
+}
