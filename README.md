@@ -1,6 +1,6 @@
 # codexus
 
-`codexus` is a Rust wrapper around the local `codex app-server`, the stdio JSON-RPC backend started by the `codex` CLI.
+`codexus` is an Agent-First Codex AppServer SDK centered on a generated typed protocol core over the local `codex app-server`.
 
 Repository identity:
 - repository and crate: `codexus`
@@ -20,20 +20,21 @@ The project is intentionally layered so callers can start with one prompt and mo
 
 ## Release Status
 
-`codexus` is currently positioned as an inventory-driven runtime wrapper over `codex app-server`.
+`codexus` is structured around:
 
-- Good fit: typed runtime helpers, generated method inventory, raw JSON-RPC escape hatch, and release-gated local integration.
-- Not yet true: full product-spec parity for every typed protocol contract surface.
+```text
+Generated Typed Protocol Core
+-> Thin Runtime
+-> Thin Human API
+```
 
-For the current deployment audit and remaining parity gaps, see [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md).
+The generated protocol layer is the only protocol truth. Runtime consumes that truth, and the human-facing APIs stay as orchestration over the generated core.
 
 ## Protocol Layer
 
 `codexus::protocol` is the generated Layer 2 inventory and method-spec surface. It is the canonical source of truth for method constants, protocol inventory, and stability metadata generated from the vendored upstream snapshot.
 
-Current limitation:
-- Layer 2 currently models protocol params and results as `serde_json::Value`.
-- Richer typed request and response models live in `codexus::runtime`.
+Contract baseline and verification rules live in [`docs/specs/product-spec.md`](docs/specs/product-spec.md).
 
 ```rust
 use codexus::protocol::{inventory, methods};
@@ -47,6 +48,10 @@ println!("pinned to {}", inv.source_revision);
 // All wire method name constants
 assert_eq!(methods::TURN_STEER, "turn/steer");
 ```
+
+`codexus::protocol::codecs` is the generated wire bridge for typed server-request decoding,
+server-notification decoding, and server-request response encoding. Use it when you need to
+intercept raw envelopes without dropping back to handwritten method tables.
 
 Regenerate from the checked-in protocol inputs:
 
@@ -78,10 +83,12 @@ codexus = { path = "crates/codexus-core" }
 Minimum release verification:
 
 ```bash
-cargo run -p xtask -- protocol-codegen
+cargo run -p xtask -- protocol-codegen-check
 cargo fmt --all --check
 cargo test --workspace
 ```
+
+CI runs the same drift gate, so stale generated protocol files block merges.
 
 Package dry run:
 
@@ -102,6 +109,32 @@ All high-level entry points share the same baseline unless you opt out:
 | privileged escalation | `false` |
 
 Privileged execution must be enabled explicitly. Tool-use hooks do not bypass sandbox or approval policy.
+
+## Runtime State
+
+`codexus::runtime::state` exposes the reducer and snapshot store used by the runtime's live
+projection layer. The default runtime uses an in-memory store, and callers can opt into a checked-in
+JSON snapshot under `.codexus/state.json` by wiring `JsonFileStateStore` into `RuntimeConfig`.
+
+```rust
+use std::sync::Arc;
+
+use codexus::runtime::{
+    ClientConfig, JsonFileStateStore, RuntimeConfig, StdioProcessSpec,
+};
+
+let process = StdioProcessSpec::new("codex");
+let runtime = RuntimeConfig::new(process)
+    .with_state_store(Arc::new(JsonFileStateStore::new("/abs/path/workdir")));
+
+let _client_config = ClientConfig::new().with_runtime_config(runtime);
+```
+
+Persisted snapshots include:
+- protocol inventory revision/hash
+- connection lifecycle state
+- per-thread active turn, diff, and plan projection
+- bounded per-turn item text/stdout/stderr accumulators
 
 ## Quick Start
 
@@ -128,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workflow = Workflow::connect(
         WorkflowConfig::new("/abs/path/workdir")
             .with_model("gpt-4o")
-            .attach_path("docs/API_REFERENCE.md"),
+            .attach_path("README.md"),
     )
     .await?;
 
@@ -258,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "sandbox": "read-only"
         }))
         .await?;
-    println!("thread: {}", result["thread"]["id"]);
+    println!("thread: {}", result.thread.id);
 
     let skills = server
         .request_typed::<SkillsList>(json!({"cwds": ["/abs/path/workdir"]}))
@@ -323,11 +356,7 @@ Key rules:
 
 ## Documentation
 
-- [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md): public API and contract reference
-- [`docs/REPO_CLEANUP_GUIDE.md`](docs/REPO_CLEANUP_GUIDE.md): simple cleanup and placement rules
-- [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md): current deployment-readiness audit and blockers
 - [`docs/specs/product-spec.md`](docs/specs/product-spec.md): current product spec
-- [`docs/TEST_TREE.md`](docs/TEST_TREE.md): test layers and release-gate boundaries
 
 ## Quality Gates
 

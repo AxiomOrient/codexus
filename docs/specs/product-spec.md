@@ -1,8 +1,8 @@
-# 02. PRODUCT SPEC — Full Codex AppServer Wrapper for codexus
+# 02. PRODUCT SPEC — Generated Typed Protocol Core for codexus
 
 ## 1. Objective
 
-Build a product-level `codexus` that **fully and exactly wraps the Codex AppServer JSON-RPC protocol** while staying operationally simple.
+Build `codexus` around a **generated typed protocol core, thin runtime, and thin human layer** while preserving exact Codex AppServer JSON-RPC interoperability.
 
 ### Required properties
 1. Every upstream method has a first-class representation.
@@ -89,7 +89,7 @@ trait RawJsonRpc {
 ```
 
 ### Layer 2 — generated typed protocol
-Protocol-complete typed surface.
+Protocol-complete typed surface and the only protocol truth.
 
 ```rust
 trait MethodSpec {
@@ -121,6 +121,26 @@ Critical rule:
 
 ---
 
+## 3.3 Runtime state projection
+
+Layer 3 must maintain one bounded, serializable runtime state projection derived only from live
+protocol envelopes plus generated inventory metadata.
+
+The runtime state contract must provide:
+- connection lifecycle state
+- per-thread active turn tracking
+- per-thread last diff and plan payload
+- per-turn terminal status and error payload
+- per-item accumulated assistant text, stdout, and stderr with truncation markers
+- pending server-request projection
+- retention limits for threads, turns, items, and accumulated text/output bytes
+- snapshot persistence behind a store trait with in-memory and JSON-file implementations
+
+The persisted snapshot must carry the generated inventory revision/hash so restored state can be
+validated against the vendored protocol snapshot that produced it.
+
+---
+
 ## 4. Stability model
 
 ```rust
@@ -133,8 +153,9 @@ enum Stability {
 
 enum FeatureClass {
     Core,
-    Experimental(&'static str),
-    DeprecatedCompat,
+    Experimental,
+    Compatibility,
+    Internal,
 }
 ```
 
@@ -151,12 +172,14 @@ enum FeatureClass {
 The library must generate or maintain the following modules.
 
 ```text
-src/runtime/generated/
+src/protocol/generated/
   methods.rs
   client_requests.rs
+  codecs.rs
   server_requests.rs
   server_notifications.rs
   client_notifications.rs
+  types.rs
   validators.rs
   inventory.rs
 ```
@@ -167,6 +190,10 @@ All method constants and name mappings.
 ### `client_requests.rs`
 One `MethodSpec` per upstream client request.
 
+### `codecs.rs`
+Generated decode/encode bridge for typed server requests, server notifications, and
+server-request responses.
+
 ### `server_requests.rs`
 Typed enum and router input decoding.
 
@@ -175,6 +202,9 @@ Typed enum and stream decoding.
 
 ### `client_notifications.rs`
 Typed outgoing notifications if applicable.
+
+### `types.rs`
+Shared generated protocol structs and enums re-exported by `codexus::protocol`.
 
 ### `validators.rs`
 Per-method request/result validation metadata.
