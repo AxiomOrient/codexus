@@ -20,6 +20,7 @@ use crate::runtime::metrics::{RuntimeMetrics, RuntimeMetricsSnapshot};
 use crate::runtime::runtime_validation::validate_runtime_capacities;
 #[cfg(test)]
 use crate::runtime::state::ConnectionState;
+use crate::runtime::state::StateStore;
 use crate::runtime::state::{RuntimeState, StateProjectionLimits};
 use crate::runtime::transport::{StdioProcessSpec, StdioTransport, StdioTransportConfig};
 
@@ -66,6 +67,7 @@ struct RuntimeSpec {
     rpc_response_timeout: Duration,
     server_request_cfg: ServerRequestConfig,
     state_projection_limits: StateProjectionLimits,
+    state_store: Arc<dyn StateStore>,
 }
 
 struct RuntimeIo {
@@ -122,6 +124,7 @@ impl Runtime {
             event_sink,
             event_sink_channel_capacity,
             state_projection_limits,
+            state_store,
         } = cfg;
 
         validate_runtime_capacities(
@@ -138,6 +141,21 @@ impl Runtime {
         let (live_tx, _) = broadcast::channel(live_channel_capacity);
         let (server_request_tx, server_request_rx) = mpsc::channel(server_request_channel_capacity);
         let metrics = Arc::new(RuntimeMetrics::new(now_millis()));
+        let initial_state = state_store
+            .load_snapshot()
+            .map(|snapshot| snapshot.into_runtime_state())
+            .map_err(|err| {
+                RuntimeError::InvalidConfig(format!("failed to load runtime state snapshot: {err}"))
+            })?;
+        // Seed next_seq from the highest last_seq across restored threads so that new
+        // envelopes always get a seq > any stored high-water mark. Without this,
+        // is_stale_thread_event() would reject all new events until the counter catches up.
+        let initial_next_seq = initial_state
+            .threads
+            .values()
+            .map(|t| t.last_seq)
+            .max()
+            .unwrap_or(0);
         let (event_sink_tx, event_sink_task) = match event_sink {
             Some(sink) => {
                 let (tx, rx) = mpsc::channel(event_sink_channel_capacity);
@@ -154,7 +172,7 @@ impl Runtime {
                     shutting_down: AtomicBool::new(false),
                     generation: AtomicU64::new(0),
                     next_rpc_id: AtomicU64::new(1),
-                    next_seq: AtomicU64::new(0),
+                    next_seq: AtomicU64::new(initial_next_seq),
                 },
                 spec: RuntimeSpec {
                     process,
@@ -164,6 +182,7 @@ impl Runtime {
                     rpc_response_timeout,
                     server_request_cfg: server_requests,
                     state_projection_limits,
+                    state_store,
                 },
                 io: RuntimeIo {
                     pending: Mutex::new(HashMap::new()),
@@ -183,7 +202,7 @@ impl Runtime {
                     transport: Mutex::new(None),
                 },
                 snapshots: RuntimeSnapshots {
-                    state: RwLock::new(Arc::new(RuntimeState::default())),
+                    state: RwLock::new(Arc::new(initial_state)),
                     initialize_result: RwLock::new(None),
                 },
                 metrics,

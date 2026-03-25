@@ -1,7 +1,7 @@
+use crate::protocol;
 use crate::runtime::core::Runtime;
 use crate::runtime::errors::RpcError;
 use crate::runtime::rpc_contract::methods;
-use crate::runtime::turn_output::parse_thread_id;
 
 mod attachment_validation;
 mod command_exec_api;
@@ -20,8 +20,8 @@ use attachment_validation::validate_prompt_attachments;
 #[cfg(test)]
 use wire::build_prompt_inputs;
 #[cfg(test)]
-use wire::{input_item_to_wire, turn_start_params_to_wire};
-use wire::{thread_start_params_to_wire, validate_thread_start_security};
+use wire::{input_item_to_wire, turn_start_params};
+use wire::{required_thread_id_from_response, thread_start_params, validate_thread_start_security};
 
 fn resolve_attachment_path(cwd: &str, path: &str) -> PathBuf {
     let path = PathBuf::from(path);
@@ -38,9 +38,7 @@ pub use models::{
     PromptRunError, PromptRunParams, PromptRunResult, PromptRunStream, PromptRunStreamEvent,
     PromptTurnFailure, PromptTurnFailureKind, PromptTurnTerminalState,
 };
-pub(crate) use types::{
-    sandbox_policy_to_wire_value, summarize_sandbox_policy, summarize_sandbox_policy_wire_value,
-};
+pub(crate) use types::{sandbox_policy_to_wire_value, summarize_sandbox_policy};
 pub use types::{
     ApprovalPolicy, ByteRange, CommandExecOutputDeltaNotification, CommandExecOutputStream,
     CommandExecParams, CommandExecResizeParams, CommandExecResizeResponse, CommandExecResponse,
@@ -65,13 +63,9 @@ impl Runtime {
         p = escalate_approval_if_tool_hooks(self, p);
         validate_thread_start_security(&p)?;
         let response = self
-            .call_validated(methods::THREAD_START, thread_start_params_to_wire(&p))
+            .request_typed::<protocol::client_requests::ThreadStart>(thread_start_params(&p))
             .await?;
-        let thread_id = parse_thread_id(&response).ok_or_else(|| {
-            RpcError::InvalidRequest(format!(
-                "thread/start missing thread id in result: {response}"
-            ))
-        })?;
+        let thread_id = required_thread_id_from_response(methods::THREAD_START, &response)?;
         Ok(ThreadHandle {
             thread_id,
             runtime: self.clone(),

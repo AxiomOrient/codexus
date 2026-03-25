@@ -4,6 +4,7 @@ use crate::plugin::{BlockReason, HookPhase};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{timeout, Instant};
 
+use crate::protocol;
 use crate::runtime::core::Runtime;
 use crate::runtime::detached_task::{current_detached_task_plan, spawn_detached_task};
 use crate::runtime::errors::{RpcError, RuntimeError};
@@ -26,10 +27,7 @@ use super::flow::{
 };
 use super::models::{PromptRunStreamState, PromptStreamCleanupState};
 use super::turn_error::{extract_turn_error_signal, PromptTurnErrorSignal};
-use super::wire::{
-    deserialize_result, serialize_params, thread_start_params_from_prompt,
-    turn_start_params_from_prompt,
-};
+use super::wire::{thread_start_params_from_prompt, turn_start_params_from_prompt};
 use super::*;
 
 const INTERRUPT_RPC_TIMEOUT: Duration = Duration::from_millis(500);
@@ -244,11 +242,14 @@ impl Runtime {
         let decisions = self
             .execute_pre_hook_phase(
                 &mut hook_state,
-                HookPhase::PreRun,
-                Some(p.cwd.as_str()),
-                prompt_state.model.as_deref(),
-                thread_id,
-                None,
+                HookContextInput {
+                    phase: HookPhase::PreRun,
+                    cwd: Some(p.cwd.as_str()),
+                    model: prompt_state.model.as_deref(),
+                    thread_id,
+                    turn_id: None,
+                    main_status: None,
+                },
                 scoped_hooks,
             )
             .await
@@ -314,11 +315,14 @@ impl Runtime {
         let decisions = self
             .execute_pre_hook_phase(
                 state,
-                HookPhase::PreTurn,
-                Some(p.cwd.as_str()),
-                prompt_state.model.as_deref(),
-                Some(thread_id),
-                None,
+                HookContextInput {
+                    phase: HookPhase::PreTurn,
+                    cwd: Some(p.cwd.as_str()),
+                    model: prompt_state.model.as_deref(),
+                    thread_id: Some(thread_id),
+                    turn_id: None,
+                    main_status: None,
+                },
                 scoped_hooks,
             )
             .await
@@ -599,22 +603,18 @@ impl Runtime {
         turn_id: &str,
         timeout_duration: Duration,
     ) -> Result<Option<LaggedTurnTerminal>, RpcError> {
-        let params = serialize_params(
-            methods::THREAD_READ,
-            &ThreadReadParams {
-                thread_id: thread_id.to_owned(),
-                include_turns: Some(true),
-            },
-        )?;
         let response = self
-            .call_validated_with_mode_and_timeout(
-                methods::THREAD_READ,
-                params,
+            .request_typed_with_mode_and_timeout::<protocol::client_requests::ThreadRead>(
+                ThreadReadParams {
+                    thread_id: thread_id.to_owned(),
+                    include_turns: Some(true),
+                },
                 RpcValidationMode::KnownMethods,
                 timeout_duration,
             )
             .await?;
-        let response: ThreadReadResponse = deserialize_result(methods::THREAD_READ, response)?;
+        let response: ThreadReadResponse =
+            super::wire::deserialize_protocol_response(methods::THREAD_READ, &response)?;
 
         let Some(turn) = response.thread.turns.iter().find(|turn| turn.id == turn_id) else {
             return Ok(None);
@@ -623,28 +623,16 @@ impl Runtime {
         Ok(lagged_terminal_from_turn(turn))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_pre_hook_phase(
         &self,
         hook_state: &mut HookExecutionState,
-        phase: HookPhase,
-        cwd: Option<&str>,
-        model: Option<&str>,
-        thread_id: Option<&str>,
-        turn_id: Option<&str>,
+        input: HookContextInput<'_>,
         scoped_hooks: Option<&RuntimeHookConfig>,
     ) -> Result<Vec<PreHookDecision>, BlockReason> {
         let ctx = build_hook_context(
             hook_state.correlation_id.as_str(),
             &hook_state.metadata,
-            HookContextInput {
-                phase,
-                cwd,
-                model,
-                thread_id,
-                turn_id,
-                main_status: None,
-            },
+            input,
         );
         self.run_pre_hooks_with(&ctx, &mut hook_state.report, scoped_hooks)
             .await

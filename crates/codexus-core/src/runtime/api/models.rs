@@ -282,12 +282,8 @@ pub enum PromptRunError {
 impl PromptRunError {
     /// Returns `true` only when the account quota is exhausted (no active subscription or credits).
     ///
-    /// Rate-limited errors ([`PromptTurnFailureKind::RateLimit`]) are **not** included here
-    /// because they are retryable with backoff. Only [`PromptTurnFailureKind::QuotaExceeded`]
-    /// means "stop and escalate to the operator".
-    ///
-    /// When this returns `true`, retrying immediately will not succeed.
-    /// Agents should stop and surface the underlying `message` to the operator.
+    /// [`PromptTurnFailureKind::RateLimit`] is **not** included — rate limits are retryable with
+    /// backoff. Only [`PromptTurnFailureKind::QuotaExceeded`] means "stop and escalate to operator".
     pub fn is_quota_exceeded(&self) -> bool {
         match self {
             Self::TurnFailedWithContext(f) | Self::TurnCompletedWithoutAssistantText(f) => {

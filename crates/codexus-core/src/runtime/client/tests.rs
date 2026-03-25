@@ -7,8 +7,9 @@ use serde_json::json;
 use tokio::time::sleep;
 
 use super::{
-    parse_initialize_user_agent, profile_to_prompt_params, session_prompt_params, ClientConfig,
-    CompatibilityGuard, RunProfile, SemVerTriplet, SessionConfig,
+    parse_initialize_user_agent, profile_to_prompt_params, session_prompt_params,
+    session_thread_start_params, ClientConfig, CompatibilityGuard, RunProfile, SemVerTriplet,
+    SessionConfig,
 };
 use crate::plugin::{HookAction, HookContext, HookIssue, HookPhase, PostHook, PreHook};
 use crate::runtime::api::{
@@ -17,7 +18,7 @@ use crate::runtime::api::{
 };
 use crate::runtime::hooks::RuntimeHookConfig;
 use crate::runtime::{InitializeCapabilities, PromptRunParams};
-use crate::test_fixtures::TempDir;
+use crate::test_fixtures::{write_executable_script, TempDir};
 
 fn write_mock_cli_script(root: &std::path::Path) -> PathBuf {
     let path = root.join("mock_codex_cli.py");
@@ -91,14 +92,7 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"id": rpc_id, "result": {"ok": True}}) + "\n")
     sys.stdout.flush()
 "#;
-    fs::write(&path, script).expect("write mock cli");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 
@@ -156,14 +150,7 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"id": rpc_id, "result": {"ok": True}}) + "\n")
     sys.stdout.flush()
 "#;
-    fs::write(&path, script).expect("write singleflight probe script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 
@@ -250,14 +237,7 @@ for line in sys.stdin:
         &allowed_resume_calls.to_string(),
     );
 
-    fs::write(&path, script).expect("write resume-sensitive cli");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, &script);
     path
 }
 
@@ -303,14 +283,7 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"id": rpc_id, "result": {"ok": True}}) + "\n")
     sys.stdout.flush()
 "#;
-    fs::write(&path, script).expect("write launch probe script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 
@@ -367,14 +340,7 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"id": rpc_id, "result": {"ok": True}}) + "\n")
     sys.stdout.flush()
 "#;
-    fs::write(&path, script).expect("write stream failure script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 
@@ -425,14 +391,7 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"id": rpc_id, "result": {"ok": True}}) + "\n")
     sys.stdout.flush()
 "#;
-    fs::write(&path, script).expect("write stream interrupt script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 
@@ -497,14 +456,7 @@ for line in sys.stdin:
         "__INTERRUPT_PROBE_PATH__",
         &serde_json::to_string(&interrupt_probe_path).expect("probe path json"),
     );
-    fs::write(&path, script).expect("write stream drop interrupt script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, &script);
     path
 }
 
@@ -631,14 +583,7 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#
     .replace("__TARGET_PATH__", &target_path);
-    fs::write(&path, script).expect("write pre-tool-use cli");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, &script);
     path
 }
 
@@ -1048,6 +993,37 @@ fn profile_to_prompt_params_maps_profile_and_input() {
             placeholder: None
         }]
     );
+}
+
+#[test]
+fn session_thread_start_params_maps_only_session_defaults() {
+    let config = SessionConfig::new("/tmp/work")
+        .with_model("gpt-5-codex")
+        .with_approval_policy(ApprovalPolicy::OnRequest)
+        .with_sandbox_policy(SandboxPolicy::Preset(SandboxPreset::WorkspaceWrite {
+            writable_roots: vec!["/tmp/work".to_owned()],
+            network_access: false,
+        }))
+        .allow_privileged_escalation();
+
+    let params = session_thread_start_params(&config);
+    assert_eq!(params.cwd.as_deref(), Some("/tmp/work"));
+    assert_eq!(params.model.as_deref(), Some("gpt-5-codex"));
+    assert_eq!(params.approval_policy, Some(ApprovalPolicy::OnRequest));
+    assert_eq!(
+        params.sandbox_policy,
+        Some(SandboxPolicy::Preset(SandboxPreset::WorkspaceWrite {
+            writable_roots: vec!["/tmp/work".to_owned()],
+            network_access: false,
+        }))
+    );
+    assert!(params.privileged_escalation_approved);
+    assert_eq!(params.model_provider, None);
+    assert_eq!(params.service_name, None);
+    assert_eq!(params.base_instructions, None);
+    assert_eq!(params.developer_instructions, None);
+    assert_eq!(params.personality, None);
+    assert_eq!(params.ephemeral, None);
 }
 
 #[tokio::test(flavor = "current_thread")]

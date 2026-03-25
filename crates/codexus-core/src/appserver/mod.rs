@@ -66,7 +66,7 @@ impl AppServer {
     where
         M: ClientRequestSpec,
     {
-        self.request_typed_with_mode::<M>(params, RpcValidationMode::None)
+        self.request_typed_with_mode::<M>(params, RpcValidationMode::KnownMethods)
             .await
     }
 
@@ -119,7 +119,7 @@ impl AppServer {
     where
         N: ClientNotificationSpec,
     {
-        self.notify_typed_with_mode::<N>(params, RpcValidationMode::None)
+        self.notify_typed_with_mode::<N>(params, RpcValidationMode::KnownMethods)
             .await
     }
 

@@ -110,6 +110,8 @@ pub const ITEM_AUTO_APPROVAL_REVIEW_STARTED: &str =
 pub const ITEM_AUTO_APPROVAL_REVIEW_COMPLETED: &str =
     super::server_notifications::ItemGuardianApprovalReviewCompleted::METHOD;
 pub const ITEM_COMPLETED: &str = super::server_notifications::ItemCompleted::METHOD;
+pub const RAW_RESPONSE_ITEM_COMPLETED: &str =
+    super::server_notifications::RawResponseItemCompleted::METHOD;
 pub const ITEM_AGENT_MESSAGE_DELTA: &str = super::server_notifications::AgentMessageDelta::METHOD;
 pub const ITEM_PLAN_DELTA: &str = super::server_notifications::PlanDelta::METHOD;
 pub const COMMAND_EXEC_OUTPUT_DELTA: &str =
@@ -137,6 +139,7 @@ pub const ITEM_REASONING_SUMMARY_TEXT_DELTA: &str =
 pub const ITEM_REASONING_SUMMARY_PART_ADDED: &str =
     super::server_notifications::ReasoningSummaryPartAdded::METHOD;
 pub const ITEM_REASONING_TEXT_DELTA: &str = super::server_notifications::ReasoningTextDelta::METHOD;
+pub const THREAD_COMPACTED: &str = super::server_notifications::ContextCompacted::METHOD;
 pub const MODEL_REROUTED: &str = super::server_notifications::ModelRerouted::METHOD;
 pub const DEPRECATION_NOTICE: &str = super::server_notifications::DeprecationNotice::METHOD;
 pub const CONFIG_WARNING: &str = super::server_notifications::ConfigWarning::METHOD;

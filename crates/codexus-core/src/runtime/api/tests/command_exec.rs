@@ -32,24 +32,27 @@ fn command_exec_params_serialize_with_tty_implications() {
     env.insert("FOO".to_owned(), Some("bar".to_owned()));
     env.insert("DROP_ME".to_owned(), None);
 
-    let wire = super::super::wire::command_exec_params_to_wire(&CommandExecParams {
-        command: vec!["bash".to_owned(), "-i".to_owned()],
-        process_id: Some("proc-1".to_owned()),
-        tty: true,
-        stream_stdin: false,
-        stream_stdout_stderr: false,
-        output_bytes_cap: Some(32768),
-        disable_output_cap: false,
-        disable_timeout: false,
-        timeout_ms: Some(1000),
-        cwd: Some("/repo".to_owned()),
-        env: Some(env),
-        size: Some(CommandExecTerminalSize {
-            rows: 48,
-            cols: 160,
-        }),
-        sandbox_policy: Some(SandboxPolicy::Preset(SandboxPreset::ReadOnly)),
-    });
+    let wire = serde_json::to_value(super::super::wire::command_exec_params(
+        &CommandExecParams {
+            command: vec!["bash".to_owned(), "-i".to_owned()],
+            process_id: Some("proc-1".to_owned()),
+            tty: true,
+            stream_stdin: false,
+            stream_stdout_stderr: false,
+            output_bytes_cap: Some(32768),
+            disable_output_cap: false,
+            disable_timeout: false,
+            timeout_ms: Some(1000),
+            cwd: Some("/repo".to_owned()),
+            env: Some(env),
+            size: Some(CommandExecTerminalSize {
+                rows: 48,
+                cols: 160,
+            }),
+            sandbox_policy: Some(SandboxPolicy::Preset(SandboxPreset::ReadOnly)),
+        },
+    ))
+    .expect("serialize generated command exec params");
 
     assert_eq!(wire["command"][0], "bash");
     assert_eq!(wire["processId"], "proc-1");
@@ -64,6 +67,43 @@ fn command_exec_params_serialize_with_tty_implications() {
     assert_eq!(wire["size"]["rows"], 48);
     assert_eq!(wire["size"]["cols"], 160);
     assert_eq!(wire["sandboxPolicy"]["type"], "readOnly");
+}
+
+#[test]
+fn command_exec_follow_up_params_plan_to_generated_shapes() {
+    let write = serde_json::to_value(super::super::wire::command_exec_write_params(
+        &CommandExecWriteParams {
+            process_id: "proc-1".to_owned(),
+            delta_base64: Some("aGVsbG8=".to_owned()),
+            close_stdin: true,
+        },
+    ))
+    .expect("serialize write params");
+    assert_eq!(write["processId"], "proc-1");
+    assert_eq!(write["deltaBase64"], "aGVsbG8=");
+    assert_eq!(write["closeStdin"], true);
+
+    let resize = serde_json::to_value(super::super::wire::command_exec_resize_params(
+        &CommandExecResizeParams {
+            process_id: "proc-1".to_owned(),
+            size: CommandExecTerminalSize {
+                rows: 40,
+                cols: 120,
+            },
+        },
+    ))
+    .expect("serialize resize params");
+    assert_eq!(resize["processId"], "proc-1");
+    assert_eq!(resize["size"]["rows"], 40);
+    assert_eq!(resize["size"]["cols"], 120);
+
+    let terminate = serde_json::to_value(super::super::wire::command_exec_terminate_params(
+        &CommandExecTerminateParams {
+            process_id: "proc-1".to_owned(),
+        },
+    ))
+    .expect("serialize terminate params");
+    assert_eq!(terminate["processId"], "proc-1");
 }
 
 #[tokio::test(flavor = "current_thread")]

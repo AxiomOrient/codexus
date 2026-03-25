@@ -3,17 +3,13 @@ use serde_json::{Map, Value};
 
 use crate::runtime::errors::RpcError;
 use crate::runtime::rpc_contract::payload_summary;
+use crate::runtime::turn_output::{parse_thread_id, parse_turn_id};
 
 use super::{
     sandbox_policy_to_wire_value, summarize_sandbox_policy, ApprovalPolicy, ByteRange,
     CommandExecParams, InputItem, PromptAttachment, TextElement, ThreadStartParams,
     TurnStartParams,
 };
-
-pub(super) fn serialize_params<T: Serialize>(method: &str, params: &T) -> Result<Value, RpcError> {
-    serde_json::to_value(params)
-        .map_err(|error| RpcError::InvalidRequest(format!("{method} invalid params: {error}")))
-}
 
 pub(super) fn deserialize_result<T: DeserializeOwned>(
     method: &str,
@@ -24,6 +20,61 @@ pub(super) fn deserialize_result<T: DeserializeOwned>(
         RpcError::InvalidRequest(format!(
             "{method} invalid result: {error}; response: {response_summary}"
         ))
+    })
+}
+
+pub(super) fn deserialize_protocol_response<T, R>(method: &str, response: &R) -> Result<T, RpcError>
+where
+    T: DeserializeOwned,
+    R: Serialize,
+{
+    let value = serialize_protocol_response(method, response)?;
+    deserialize_result(method, value)
+}
+
+pub(super) fn serialize_protocol_response<R>(method: &str, response: &R) -> Result<Value, RpcError>
+where
+    R: Serialize,
+{
+    serde_json::to_value(response).map_err(|error| {
+        RpcError::InvalidRequest(format!(
+            "{method} protocol response serialization failed: {error}"
+        ))
+    })
+}
+
+pub(super) fn required_thread_id_from_response<R>(
+    method: &str,
+    response: &R,
+) -> Result<String, RpcError>
+where
+    R: Serialize,
+{
+    required_id_from_response(method, response, parse_thread_id, "thread id")
+}
+
+pub(super) fn required_turn_id_from_response<R>(
+    method: &str,
+    response: &R,
+) -> Result<String, RpcError>
+where
+    R: Serialize,
+{
+    required_id_from_response(method, response, parse_turn_id, "turn id")
+}
+
+fn required_id_from_response<R>(
+    method: &str,
+    response: &R,
+    parse_id: fn(&Value) -> Option<String>,
+    field_label: &'static str,
+) -> Result<String, RpcError>
+where
+    R: Serialize,
+{
+    let value = serialize_protocol_response(method, response)?;
+    parse_id(&value).ok_or_else(|| {
+        RpcError::InvalidRequest(format!("{method} missing {field_label} in result: {value}"))
     })
 }
 
@@ -143,10 +194,12 @@ fn has_explicit_scope(cwd: Option<&str>, has_non_empty_writable_roots: bool) -> 
     has_non_empty_writable_roots
 }
 
-/// Map thread start parameters to wire JSON.
+/// Plan generated thread/start params from human API inputs.
 /// Allocation: one JSON object + selected optional fields.
 /// Complexity: O(1) excluding nested JSON clone costs.
-pub(super) fn thread_start_params_to_wire(p: &ThreadStartParams) -> Value {
+pub(super) fn thread_start_params(
+    p: &ThreadStartParams,
+) -> crate::protocol::generated::ThreadStartParams {
     let mut params = Map::<String, Value>::new();
     insert_thread_common_overrides(&mut params, p);
 
@@ -157,7 +210,7 @@ pub(super) fn thread_start_params_to_wire(p: &ThreadStartParams) -> Value {
     );
     insert_if_some(&mut params, "ephemeral", p.ephemeral.map(Value::from));
 
-    Value::Object(params)
+    params.into()
 }
 
 /// Map thread override parameters to wire JSON.
@@ -219,10 +272,13 @@ fn insert_thread_common_overrides(params: &mut Map<String, Value>, p: &ThreadSta
     );
 }
 
-/// Map turn start parameters to wire JSON.
+/// Plan generated turn/start params from human API inputs.
 /// Allocation: one JSON object + input vector object allocations.
 /// Complexity: O(n), n = input item count.
-pub(super) fn turn_start_params_to_wire(thread_id: &str, p: &TurnStartParams) -> Value {
+pub(super) fn turn_start_params(
+    thread_id: &str,
+    p: &TurnStartParams,
+) -> crate::protocol::generated::TurnStartParams {
     let mut params = Map::<String, Value>::new();
     params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
     params.insert(
@@ -230,15 +286,14 @@ pub(super) fn turn_start_params_to_wire(thread_id: &str, p: &TurnStartParams) ->
         Value::Array(p.input.iter().map(input_item_to_wire).collect()),
     );
 
-    if let Some(cwd) = p.cwd.as_ref() {
-        params.insert("cwd".to_owned(), Value::String(cwd.clone()));
-    }
-    if let Some(approval_policy) = p.approval_policy.as_ref() {
-        params.insert(
-            "approvalPolicy".to_owned(),
-            Value::String(approval_policy.as_wire().to_owned()),
-        );
-    }
+    insert_if_some(&mut params, "cwd", p.cwd.as_deref().map(Value::from));
+    insert_if_some(
+        &mut params,
+        "approvalPolicy",
+        p.approval_policy
+            .as_ref()
+            .map(|ap| Value::from(ap.as_wire())),
+    );
     insert_privileged_escalation_approved(&mut params, p.privileged_escalation_approved);
     insert_if_some(
         &mut params,
@@ -270,13 +325,75 @@ pub(super) fn turn_start_params_to_wire(thread_id: &str, p: &TurnStartParams) ->
     );
     insert_if_some(&mut params, "outputSchema", p.output_schema.clone());
 
-    Value::Object(params)
+    params.into()
 }
 
-/// Map command/exec parameters to wire JSON.
+pub(super) fn turn_steer_params(
+    thread_id: &str,
+    expected_turn_id: &str,
+    input: &[InputItem],
+) -> crate::protocol::generated::TurnSteerParams {
+    let mut params = Map::<String, Value>::new();
+    params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
+    params.insert(
+        "expectedTurnId".to_owned(),
+        Value::String(expected_turn_id.to_owned()),
+    );
+    params.insert(
+        "input".to_owned(),
+        Value::Array(input.iter().map(input_item_to_wire).collect()),
+    );
+    params.into()
+}
+
+pub(super) fn thread_resume_params(
+    thread_id: &str,
+    p: &ThreadStartParams,
+) -> crate::protocol::generated::ThreadResumeParams {
+    let mut params = Map::<String, Value>::new();
+    params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
+    let overrides = thread_overrides_to_wire(p);
+    if !overrides.is_empty() {
+        params.insert("overrides".to_owned(), Value::Object(overrides));
+    }
+    params.into()
+}
+
+pub(super) fn thread_fork_params(thread_id: &str) -> crate::protocol::generated::ThreadForkParams {
+    single_thread_id_params(thread_id)
+}
+
+pub(super) fn thread_archive_params(
+    thread_id: &str,
+) -> crate::protocol::generated::ThreadArchiveParams {
+    single_thread_id_params(thread_id)
+}
+
+pub(super) fn turn_interrupt_params(
+    thread_id: &str,
+    turn_id: &str,
+) -> crate::protocol::generated::TurnInterruptParams {
+    let mut params = Map::<String, Value>::new();
+    params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
+    params.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+    params.into()
+}
+
+fn single_thread_id_params<T>(thread_id: &str) -> T
+where
+    T: From<Map<String, Value>>,
+{
+    let mut params = Map::<String, Value>::new();
+    params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
+    params.into()
+}
+
+/// Plan generated command/exec params from human API inputs.
 /// Allocation: one JSON object plus optional nested env/sandbox objects.
 /// Complexity: O(n), n = env entry count + command argv length.
-pub(super) fn command_exec_params_to_wire(p: &CommandExecParams) -> Value {
+pub(super) fn command_exec_params(
+    p: &CommandExecParams,
+) -> crate::protocol::generated::OneOffCommandExecParams {
     let mut params = Map::<String, Value>::new();
     params.insert(
         "command".to_owned(),
@@ -357,7 +474,51 @@ pub(super) fn command_exec_params_to_wire(p: &CommandExecParams) -> Value {
         p.sandbox_policy.as_ref().map(sandbox_policy_to_wire_value),
     );
 
-    Value::Object(params)
+    params.into()
+}
+
+pub(super) fn command_exec_write_params(
+    p: &crate::runtime::CommandExecWriteParams,
+) -> crate::protocol::generated::CommandExecWriteParams {
+    let mut params = Map::<String, Value>::new();
+    params.insert("processId".to_owned(), Value::String(p.process_id.clone()));
+    insert_if_some(
+        &mut params,
+        "deltaBase64",
+        p.delta_base64
+            .as_ref()
+            .map(|value| Value::String(value.clone())),
+    );
+    if p.close_stdin {
+        params.insert("closeStdin".to_owned(), Value::Bool(true));
+    }
+    params.into()
+}
+
+pub(super) fn command_exec_resize_params(
+    p: &crate::runtime::CommandExecResizeParams,
+) -> crate::protocol::generated::CommandExecResizeParams {
+    let mut size = Map::<String, Value>::new();
+    size.insert(
+        "rows".to_owned(),
+        Value::Number(serde_json::Number::from(p.size.rows)),
+    );
+    size.insert(
+        "cols".to_owned(),
+        Value::Number(serde_json::Number::from(p.size.cols)),
+    );
+    let mut params = Map::<String, Value>::new();
+    params.insert("processId".to_owned(), Value::String(p.process_id.clone()));
+    params.insert("size".to_owned(), Value::Object(size));
+    params.into()
+}
+
+pub(super) fn command_exec_terminate_params(
+    p: &crate::runtime::CommandExecTerminateParams,
+) -> crate::protocol::generated::CommandExecTerminateParams {
+    let mut params = Map::<String, Value>::new();
+    params.insert("processId".to_owned(), Value::String(p.process_id.clone()));
+    params.into()
 }
 
 /// Build input items for one prompt execution.

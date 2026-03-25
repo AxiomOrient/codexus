@@ -1,5 +1,6 @@
 use super::*;
 use crate::protocol::client_requests::ThreadRead as ThreadReadSpec;
+use crate::protocol::generated::types::ThreadReadParams;
 
 #[tokio::test(flavor = "current_thread")]
 async fn request_json_thread_start_returns_thread_id() {
@@ -18,13 +19,13 @@ async fn request_typed_thread_read_returns_started_thread() {
 
     let thread_id = start_thread(&app).await;
     let read = app
-        .request_typed::<ThreadReadSpec>(json!({
-            "threadId": thread_id.clone(),
-            "includeTurns": false
-        }))
+        .request_typed::<ThreadReadSpec>(ThreadReadParams {
+            thread_id: thread_id.clone(),
+            include_turns: Some(false),
+        })
         .await
         .expect("typed thread/read");
-    assert_eq!(read["thread"]["id"], thread_id);
+    assert_eq!(read.thread.id, thread_id);
 
     archive_thread_best_effort(&app, &thread_id).await;
     app.shutdown().await.expect("shutdown");
@@ -36,14 +37,14 @@ async fn request_typed_thread_read_returns_started_thread_via_protocol_spec() {
 
     let thread_id = start_thread(&app).await;
     let read = app
-        .request_typed::<ThreadReadSpec>(json!({
-            "threadId": thread_id,
-            "includeTurns": false
-        }))
+        .request_typed::<ThreadReadSpec>(ThreadReadParams {
+            thread_id: thread_id.clone(),
+            include_turns: Some(false),
+        })
         .await
         .expect("protocol thread/read");
 
-    assert_eq!(read["thread"]["id"], thread_id);
+    assert_eq!(read.thread.id, thread_id);
 
     app.shutdown().await.expect("shutdown");
 }

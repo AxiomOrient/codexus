@@ -16,9 +16,7 @@ pub use command_exec::{
 };
 pub use input::TextElement;
 pub use input::{ByteRange, InputItem, PromptAttachment, ThreadId, TurnId};
-pub(crate) use policies::{
-    sandbox_policy_to_wire_value, summarize_sandbox_policy, summarize_sandbox_policy_wire_value,
-};
+pub(crate) use policies::{sandbox_policy_to_wire_value, summarize_sandbox_policy};
 pub use policies::{
     ApprovalPolicy, ExternalNetworkAccess, Personality, ReasoningEffort, SandboxPolicy,
     SandboxPreset, ServiceTier, DEFAULT_REASONING_EFFORT,

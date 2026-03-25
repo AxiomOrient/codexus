@@ -1,12 +1,13 @@
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::str::FromStr;
 
+pub use crate::protocol::generated::types::{
+    ThreadListParams, ThreadListResponse, ThreadListSortKey, ThreadLoadedListParams,
+    ThreadLoadedListResponse, ThreadReadParams, ThreadRollbackParams, ThreadRollbackResponse,
+};
 use crate::runtime::core::Runtime;
 
 use super::input::{InputItem, ThreadId, TurnId};
 use super::policies::{ApprovalPolicy, Personality, ReasoningEffort, SandboxPolicy, ServiceTier};
-use super::thread_views::ThreadView;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TurnStartParams {
@@ -58,93 +59,4 @@ pub struct ThreadStartParams {
     pub personality: Option<Personality>,
     pub ephemeral: Option<bool>,
     pub privileged_escalation_approved: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadReadParams {
-    pub thread_id: ThreadId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_turns: Option<bool>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ThreadListSortKey {
-    #[serde(rename = "created_at")]
-    CreatedAt,
-    #[serde(rename = "updated_at")]
-    UpdatedAt,
-}
-
-impl ThreadListSortKey {
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Self::CreatedAt => "created_at",
-            Self::UpdatedAt => "updated_at",
-        }
-    }
-}
-
-impl FromStr for ThreadListSortKey {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "created_at" => Ok(Self::CreatedAt),
-            "updated_at" => Ok(Self::UpdatedAt),
-            other => Err(format!("unknown thread list sort key: {other}")),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadListParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archived: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_providers: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sort_key: Option<ThreadListSortKey>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadListResponse {
-    pub data: Vec<ThreadView>,
-    #[serde(default)]
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadLoadedListParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadLoadedListResponse {
-    pub data: Vec<String>,
-    #[serde(default)]
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadRollbackParams {
-    pub thread_id: ThreadId,
-    pub num_turns: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ThreadRollbackResponse {
-    pub thread: ThreadView,
 }

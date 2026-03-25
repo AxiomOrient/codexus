@@ -1,6 +1,5 @@
 pub type ThreadId = String;
 pub type TurnId = String;
-pub type ItemId = String;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputItem {

@@ -1,24 +1,27 @@
 use std::time::Duration;
 
 use crate::plugin::{BlockReason, HookPhase};
-use serde_json::{Map, Value};
 
+use crate::protocol;
+use crate::protocol::MethodSpec;
 use crate::runtime::core::Runtime;
 use crate::runtime::errors::RpcError;
 use crate::runtime::hooks::RuntimeHookConfig;
 use crate::runtime::rpc_contract::{methods, RpcValidationMode};
-use crate::runtime::turn_output::{parse_thread_id, parse_turn_id};
 
 use super::flow::{
     apply_pre_hook_actions_to_session, result_status, HookContextInput, HookExecutionState,
     SessionMutationState,
 };
 use super::wire::{
-    deserialize_result, input_item_to_wire, serialize_params, thread_overrides_to_wire,
-    turn_start_params_to_wire, validate_turn_start_security,
+    deserialize_protocol_response, required_thread_id_from_response,
+    required_turn_id_from_response, thread_archive_params, thread_fork_params,
+    thread_resume_params, turn_interrupt_params, turn_start_params, turn_steer_params,
+    validate_turn_start_security,
 };
 use super::*;
 
+#[cfg(test)]
 const TURN_STEER_METHOD: &str = crate::protocol::methods::TURN_STEER;
 
 impl ThreadHandle {
@@ -32,15 +35,12 @@ impl ThreadHandle {
 
         let response = self
             .runtime
-            .call_validated(
-                methods::TURN_START,
-                turn_start_params_to_wire(&self.thread_id, &p),
-            )
+            .request_typed::<protocol::client_requests::TurnStart>(turn_start_params(
+                &self.thread_id,
+                &p,
+            ))
             .await?;
-
-        let turn_id = parse_turn_id(&response).ok_or_else(|| {
-            RpcError::InvalidRequest(format!("turn/start missing turn id in result: {response}"))
-        })?;
+        let turn_id = required_turn_id_from_response(methods::TURN_START, &response)?;
 
         Ok(TurnHandle {
             turn_id,
@@ -58,25 +58,18 @@ impl ThreadHandle {
     ) -> Result<super::TurnId, RpcError> {
         ensure_turn_input_not_empty(&input)?;
 
-        let mut params = Map::<String, Value>::new();
-        params.insert("threadId".to_owned(), Value::String(self.thread_id.clone()));
-        params.insert(
-            "expectedTurnId".to_owned(),
-            Value::String(expected_turn_id.to_owned()),
-        );
-        params.insert(
-            "input".to_owned(),
-            Value::Array(input.iter().map(input_item_to_wire).collect()),
-        );
         let response = self
             .runtime
-            .call_validated(TURN_STEER_METHOD, Value::Object(params))
-            .await?;
-        parse_turn_id(&response).ok_or_else(|| {
-            RpcError::InvalidRequest(format!(
-                "{TURN_STEER_METHOD} missing turn id in result: {response}"
+            .request_typed::<protocol::client_requests::TurnSteer>(turn_steer_params(
+                &self.thread_id,
+                expected_turn_id,
+                &input,
             ))
-        })
+            .await?;
+        required_turn_id_from_response(
+            <protocol::client_requests::TurnSteer as MethodSpec>::META.wire_name,
+            &response,
+        )
     }
 
     pub async fn turn_interrupt(&self, turn_id: &str) -> Result<(), RpcError> {
@@ -177,11 +170,14 @@ impl Runtime {
         let decisions = self
             .execute_pre_hook_phase(
                 &mut hook_state,
-                HookPhase::PreSessionStart,
-                p.cwd.as_deref(),
-                p.model.as_deref(),
-                thread_id,
-                None,
+                HookContextInput {
+                    phase: HookPhase::PreSessionStart,
+                    cwd: p.cwd.as_deref(),
+                    model: p.model.as_deref(),
+                    thread_id,
+                    turn_id: None,
+                    main_status: None,
+                },
                 scoped_hooks,
             )
             .await
@@ -238,21 +234,12 @@ impl Runtime {
     ) -> Result<ThreadHandle, RpcError> {
         let p = super::escalate_approval_if_tool_hooks(self, p);
         super::wire::validate_thread_start_security(&p)?;
-        let mut params = Map::<String, Value>::new();
-        params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
-        let overrides = thread_overrides_to_wire(&p);
-        if !overrides.is_empty() {
-            params.insert("overrides".to_owned(), Value::Object(overrides));
-        }
-
         let response = self
-            .call_validated(methods::THREAD_RESUME, Value::Object(params))
-            .await?;
-        let resumed = parse_thread_id(&response).ok_or_else(|| {
-            RpcError::InvalidRequest(format!(
-                "thread/resume missing thread id in result: {response}"
+            .request_typed::<protocol::client_requests::ThreadResume>(thread_resume_params(
+                thread_id, &p,
             ))
-        })?;
+            .await?;
+        let resumed = required_thread_id_from_response(methods::THREAD_RESUME, &response)?;
         if resumed != thread_id {
             return Err(RpcError::InvalidRequest(format!(
                 "thread/resume returned mismatched thread id: requested={thread_id} actual={resumed}"
@@ -265,16 +252,10 @@ impl Runtime {
     }
 
     pub async fn thread_fork(&self, thread_id: &str) -> Result<ThreadHandle, RpcError> {
-        let mut params = Map::<String, Value>::new();
-        params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
         let response = self
-            .call_validated(methods::THREAD_FORK, Value::Object(params))
+            .request_typed::<protocol::client_requests::ThreadFork>(thread_fork_params(thread_id))
             .await?;
-        let forked = parse_thread_id(&response).ok_or_else(|| {
-            RpcError::InvalidRequest(format!(
-                "thread/fork missing thread id in result: {response}"
-            ))
-        })?;
+        let forked = required_thread_id_from_response(methods::THREAD_FORK, &response)?;
         Ok(ThreadHandle {
             thread_id: forked,
             runtime: self.clone(),
@@ -285,10 +266,10 @@ impl Runtime {
     /// Allocation: one JSON object with thread id.
     /// Complexity: O(1).
     pub async fn thread_archive(&self, thread_id: &str) -> Result<(), RpcError> {
-        let mut params = Map::<String, Value>::new();
-        params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
         let _ = self
-            .call_validated(methods::THREAD_ARCHIVE, Value::Object(params))
+            .request_typed::<protocol::client_requests::ThreadArchive>(thread_archive_params(
+                thread_id,
+            ))
             .await?;
         Ok(())
     }
@@ -297,18 +278,20 @@ impl Runtime {
     /// Allocation: serialized params + decoded response object.
     /// Complexity: O(n), n = thread payload size.
     pub async fn thread_read(&self, p: ThreadReadParams) -> Result<ThreadReadResponse, RpcError> {
-        let params = serialize_params(methods::THREAD_READ, &p)?;
-        let response = self.call_validated(methods::THREAD_READ, params).await?;
-        deserialize_result(methods::THREAD_READ, response)
+        let response = self
+            .request_typed::<protocol::client_requests::ThreadRead>(p)
+            .await?;
+        deserialize_protocol_response(methods::THREAD_READ, &response)
     }
 
     /// List persisted threads with optional filters and pagination.
     /// Allocation: serialized params + decoded list payload.
     /// Complexity: O(n), n = number of returned threads.
     pub async fn thread_list(&self, p: ThreadListParams) -> Result<ThreadListResponse, RpcError> {
-        let params = serialize_params(methods::THREAD_LIST, &p)?;
-        let response = self.call_validated(methods::THREAD_LIST, params).await?;
-        deserialize_result(methods::THREAD_LIST, response)
+        let response = self
+            .request_typed::<protocol::client_requests::ThreadList>(p)
+            .await?;
+        deserialize_protocol_response(methods::THREAD_LIST, &response)
     }
 
     /// List currently loaded thread ids from in-memory sessions.
@@ -318,20 +301,20 @@ impl Runtime {
         &self,
         p: ThreadLoadedListParams,
     ) -> Result<ThreadLoadedListResponse, RpcError> {
-        let params = serialize_params(methods::THREAD_LOADED_LIST, &p)?;
         let response = self
-            .call_validated(methods::THREAD_LOADED_LIST, params)
+            .request_typed::<protocol::client_requests::ThreadLoadedList>(p)
             .await?;
-        deserialize_result(methods::THREAD_LOADED_LIST, response)
+        deserialize_protocol_response(methods::THREAD_LOADED_LIST, &response)
     }
 
     /// List skills for one or more working directories.
     /// Allocation: serialized params + decoded inventory payload.
     /// Complexity: O(n), n = number of returned cwd entries + skill metadata size.
     pub async fn skills_list(&self, p: SkillsListParams) -> Result<SkillsListResponse, RpcError> {
-        let params = serialize_params(methods::SKILLS_LIST, &p)?;
-        let response = self.call_validated(methods::SKILLS_LIST, params).await?;
-        deserialize_result(methods::SKILLS_LIST, response)
+        let response = self
+            .request_typed::<protocol::client_requests::SkillsList>(p)
+            .await?;
+        deserialize_protocol_response(methods::SKILLS_LIST, &response)
     }
 
     /// Roll back the last `num_turns` turns from a thread.
@@ -341,11 +324,10 @@ impl Runtime {
         &self,
         p: ThreadRollbackParams,
     ) -> Result<ThreadRollbackResponse, RpcError> {
-        let params = serialize_params(methods::THREAD_ROLLBACK, &p)?;
         let response = self
-            .call_validated(methods::THREAD_ROLLBACK, params)
+            .request_typed::<protocol::client_requests::ThreadRollback>(p)
             .await?;
-        deserialize_result(methods::THREAD_ROLLBACK, response)
+        deserialize_protocol_response(methods::THREAD_ROLLBACK, &response)
     }
 
     /// Interrupt one in-flight turn for a thread.
@@ -353,10 +335,9 @@ impl Runtime {
     /// Complexity: O(1).
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<(), RpcError> {
         let _ = self
-            .call_validated(
-                methods::TURN_INTERRUPT,
-                interrupt_params(thread_id, turn_id),
-            )
+            .request_typed::<protocol::client_requests::TurnInterrupt>(turn_interrupt_params(
+                thread_id, turn_id,
+            ))
             .await?;
         Ok(())
     }
@@ -371,22 +352,14 @@ impl Runtime {
         timeout_duration: Duration,
     ) -> Result<(), RpcError> {
         let _ = self
-            .call_validated_with_mode_and_timeout(
-                methods::TURN_INTERRUPT,
-                interrupt_params(thread_id, turn_id),
+            .request_typed_with_mode_and_timeout::<protocol::client_requests::TurnInterrupt>(
+                turn_interrupt_params(thread_id, turn_id),
                 RpcValidationMode::KnownMethods,
                 timeout_duration,
             )
             .await?;
         Ok(())
     }
-}
-
-fn interrupt_params(thread_id: &str, turn_id: &str) -> Value {
-    let mut params = Map::<String, Value>::new();
-    params.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
-    params.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-    Value::Object(params)
 }
 
 fn ensure_turn_input_not_empty(input: &[InputItem]) -> Result<(), RpcError> {

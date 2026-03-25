@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -105,6 +107,281 @@ impl Default for StateProjectionLimits {
             max_stdout_bytes_per_item: 256 * 1024,
             max_stderr_bytes_per_item: 256 * 1024,
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InventorySnapshot {
+    pub source_revision: String,
+    pub source_hash: String,
+}
+
+impl Default for InventorySnapshot {
+    fn default() -> Self {
+        Self {
+            source_revision: crate::protocol::generated::inventory::SOURCE_REVISION.to_owned(),
+            source_hash: crate::protocol::generated::inventory::SOURCE_HASH.to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStateSnapshot {
+    pub inventory: InventorySnapshot,
+    pub runtime: RuntimeStateCore,
+    pub pending_server_requests: HashMap<String, PendingServerRequest>,
+}
+
+impl Default for RuntimeStateSnapshot {
+    fn default() -> Self {
+        Self::from_runtime_state(&RuntimeState::default())
+    }
+}
+
+impl RuntimeStateSnapshot {
+    pub fn from_runtime_state(state: &RuntimeState) -> Self {
+        Self {
+            inventory: InventorySnapshot::default(),
+            runtime: RuntimeStateCore {
+                connection: state.connection.clone(),
+                threads: state.threads.clone(),
+            },
+            pending_server_requests: state.pending_server_requests.clone(),
+        }
+    }
+
+    pub fn into_runtime_state(self) -> RuntimeState {
+        RuntimeState {
+            connection: self.runtime.connection,
+            threads: self.runtime.threads,
+            // Pending server requests from a previous process are unrecoverable:
+            // their RPC IDs are gone and the timeout sweeper won't see them.
+            // Clear them on restore to avoid zombie entries.
+            pending_server_requests: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum StateStoreError {
+    Io(String),
+    Serde(String),
+}
+
+impl std::fmt::Display for StateStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(message) => write!(f, "{message}"),
+            Self::Serde(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for StateStoreError {}
+
+impl From<std::io::Error> for StateStoreError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for StateStoreError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serde(err.to_string())
+    }
+}
+
+pub trait StateStore: Send + Sync {
+    fn load_snapshot(&self) -> Result<RuntimeStateSnapshot, StateStoreError>;
+    fn save_snapshot(&self, snapshot: &RuntimeStateSnapshot) -> Result<(), StateStoreError>;
+}
+
+#[derive(Default)]
+pub struct MemoryStateStore {
+    snapshot: std::sync::RwLock<RuntimeStateSnapshot>,
+}
+
+impl MemoryStateStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl StateStore for MemoryStateStore {
+    fn load_snapshot(&self) -> Result<RuntimeStateSnapshot, StateStoreError> {
+        Ok(match self.snapshot.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        })
+    }
+
+    fn save_snapshot(&self, snapshot: &RuntimeStateSnapshot) -> Result<(), StateStoreError> {
+        match self.snapshot.write() {
+            Ok(mut guard) => {
+                *guard = snapshot.clone();
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = snapshot.clone();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonFilePaths {
+    pub snapshot_path: PathBuf,
+}
+
+impl JsonFilePaths {
+    pub fn from_base_dir(base_dir: &Path) -> Self {
+        Self {
+            snapshot_path: base_dir.join(".codexus").join("state.json"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStateCore {
+    connection: ConnectionState,
+    threads: HashMap<String, ThreadState>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum JsonStoreReadOp {
+    ReadFile(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum JsonStoreWriteOp {
+    EnsureDir(PathBuf),
+    WriteJsonFile { path: PathBuf, value: Value },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JsonStoreLoadPlan {
+    pub operations: Vec<JsonStoreReadOp>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JsonStoreSavePlan {
+    pub operations: Vec<JsonStoreWriteOp>,
+}
+
+pub struct JsonFileStateStore {
+    paths: JsonFilePaths,
+}
+
+impl JsonFileStateStore {
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        let base_dir = base_dir.into();
+        Self {
+            paths: JsonFilePaths::from_base_dir(&base_dir),
+        }
+    }
+
+    pub fn paths(&self) -> &JsonFilePaths {
+        &self.paths
+    }
+
+    pub fn plan_load(paths: &JsonFilePaths) -> JsonStoreLoadPlan {
+        JsonStoreLoadPlan {
+            operations: vec![JsonStoreReadOp::ReadFile(paths.snapshot_path.clone())],
+        }
+    }
+
+    pub fn plan_save(
+        paths: &JsonFilePaths,
+        snapshot: &RuntimeStateSnapshot,
+    ) -> Result<JsonStoreSavePlan, StateStoreError> {
+        let snapshot_json = canonicalize_json_value(serde_json::to_value(snapshot)?);
+        let mut operations = Vec::with_capacity(2);
+        if let Some(parent) = paths.snapshot_path.parent() {
+            operations.push(JsonStoreWriteOp::EnsureDir(parent.to_path_buf()));
+        }
+        operations.push(JsonStoreWriteOp::WriteJsonFile {
+            path: paths.snapshot_path.clone(),
+            value: snapshot_json,
+        });
+        Ok(JsonStoreSavePlan { operations })
+    }
+
+    pub fn apply_load(plan: &JsonStoreLoadPlan) -> Result<Vec<Option<String>>, StateStoreError> {
+        let mut reads = Vec::with_capacity(plan.operations.len());
+        for op in &plan.operations {
+            match op {
+                JsonStoreReadOp::ReadFile(path) => match fs::read_to_string(path) {
+                    Ok(content) => reads.push(Some(content)),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => reads.push(None),
+                    Err(err) => return Err(err.into()),
+                },
+            }
+        }
+        Ok(reads)
+    }
+
+    pub fn normalize_loaded(
+        read_results: &[Option<String>],
+    ) -> Result<RuntimeStateSnapshot, StateStoreError> {
+        match read_results.first() {
+            Some(Some(snapshot)) => Ok(serde_json::from_str(snapshot)?),
+            _ => Ok(RuntimeStateSnapshot::default()),
+        }
+    }
+
+    pub fn apply_save(plan: &JsonStoreSavePlan) -> Result<(), StateStoreError> {
+        for op in &plan.operations {
+            match op {
+                JsonStoreWriteOp::EnsureDir(path) => {
+                    fs::create_dir_all(path)?;
+                }
+                JsonStoreWriteOp::WriteJsonFile { path, value } => {
+                    // Write to a sibling temp file then rename so that a crash mid-write
+                    // leaves the previous snapshot intact rather than a corrupted file.
+                    // rename(2) is atomic on POSIX (same filesystem guaranteed by same dir).
+                    let tmp = path.with_extension("tmp");
+                    fs::write(&tmp, serde_json::to_string_pretty(value)?)?;
+                    fs::rename(&tmp, path)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn canonicalize_json_value(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort_unstable();
+            let mut out = serde_json::Map::with_capacity(keys.len());
+            for key in keys {
+                if let Some(inner) = map.get(&key) {
+                    out.insert(key, canonicalize_json_value(inner.clone()));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(canonicalize_json_value).collect())
+        }
+        other => other,
+    }
+}
+
+impl StateStore for JsonFileStateStore {
+    fn load_snapshot(&self) -> Result<RuntimeStateSnapshot, StateStoreError> {
+        let plan = Self::plan_load(&self.paths);
+        let reads = Self::apply_load(&plan)?;
+        Self::normalize_loaded(&reads)
+    }
+
+    fn save_snapshot(&self, snapshot: &RuntimeStateSnapshot) -> Result<(), StateStoreError> {
+        let plan = Self::plan_save(&self.paths, snapshot)?;
+        Self::apply_save(&plan)
     }
 }
 
@@ -856,5 +1133,75 @@ mod tests {
         assert_eq!(item.text_accum, "new");
         assert_eq!(item.last_seq, 3);
         assert_eq!(state.threads["thr"].last_seq, 3);
+    }
+
+    #[test]
+    fn memory_state_store_round_trip() {
+        let store = MemoryStateStore::new();
+        let mut state = RuntimeState {
+            connection: ConnectionState::Running { generation: 7 },
+            ..RuntimeState::default()
+        };
+        state.pending_server_requests.insert(
+            "p_1".to_owned(),
+            PendingServerRequest {
+                approval_id: "p_1".to_owned(),
+                deadline_unix_ms: 1_700_000_000_000,
+                method: "item/fileChange/requestApproval".to_owned(),
+                params: json!({"threadId":"thr_1"}),
+            },
+        );
+
+        let snapshot = RuntimeStateSnapshot::from_runtime_state(&state);
+        store.save_snapshot(&snapshot).expect("save");
+        let loaded = store.load_snapshot().expect("load");
+        assert_eq!(loaded, snapshot);
+    }
+
+    #[test]
+    fn json_file_state_store_round_trip() {
+        let base = std::env::temp_dir()
+            .join("codexus-state-store-tests")
+            .join(format!("pid-{}", std::process::id()))
+            .join("json-round-trip");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let store = JsonFileStateStore::new(base.clone());
+        let mut state = RuntimeState {
+            connection: ConnectionState::Running { generation: 3 },
+            ..RuntimeState::default()
+        };
+        state.threads.insert(
+            "thr_1".to_owned(),
+            ThreadState {
+                id: "thr_1".to_owned(),
+                active_turn: Some("turn_1".to_owned()),
+                turns: HashMap::new(),
+                last_diff: Some("diff".to_owned()),
+                plan: Some(json!({"steps":[] })),
+                last_seq: 1,
+            },
+        );
+        state.pending_server_requests.insert(
+            "req_1".to_owned(),
+            PendingServerRequest {
+                approval_id: "req_1".to_owned(),
+                deadline_unix_ms: 1_700_000_000_000,
+                method: "item/tool/call".to_owned(),
+                params: json!({"name":"ls"}),
+            },
+        );
+
+        let snapshot = RuntimeStateSnapshot::from_runtime_state(&state);
+        let save_plan = JsonFileStateStore::plan_save(store.paths(), &snapshot).expect("plan save");
+        JsonFileStateStore::apply_save(&save_plan).expect("apply save");
+        let load_plan = JsonFileStateStore::plan_load(store.paths());
+        let reads = JsonFileStateStore::apply_load(&load_plan).expect("apply load");
+        let loaded = JsonFileStateStore::normalize_loaded(&reads).expect("normalize load");
+
+        assert_eq!(loaded, snapshot);
+        assert!(store.paths().snapshot_path.is_file());
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

@@ -22,6 +22,10 @@ pub mod methods {
     pub use super::generated::methods::*;
 }
 
+pub mod codecs {
+    pub use super::generated::codecs::*;
+}
+
 pub mod server_notifications {
     pub use super::generated::server_notifications::*;
 }

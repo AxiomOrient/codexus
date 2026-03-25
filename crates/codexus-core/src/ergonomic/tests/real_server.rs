@@ -7,12 +7,13 @@ use crate::runtime::PromptRunResult;
 use crate::runtime::{Client, RunProfile, SessionConfig};
 use crate::ShellCommandHook;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{sleep, Duration as TokioDuration};
-use uuid::Uuid;
 
 const MAX_REAL_SERVER_RETRIES: usize = 5;
 const QUICK_RUN_ATTEMPT_TIMEOUT: TokioDuration = TokioDuration::from_secs(45);
@@ -26,6 +27,7 @@ const APPROVAL_COMPLETION_TIMEOUT: TokioDuration = TokioDuration::from_secs(240)
 const APPROVAL_FILE_TEXT: &str = "approval-needed";
 const REAL_SERVER_APPROVAL_ENV: &str = "CODEX_RUNTIME_REAL_SERVER_APPROVED";
 const ATTACHED_DOC_TOKEN: &str = "sandboxPolicy";
+const ATTACHED_SKILL_NAME: &str = "repo-cleanup-guard";
 const SESSION_MEMORY_TOKEN: &str = "AXIOM-742";
 const RESUME_MEMORY_TOKEN: &str = "LATTICE-931";
 const HOOK_FILE_TEXT: &str = "hook-wrote-this";
@@ -35,8 +37,9 @@ struct ScratchDirGuard {
 }
 
 impl ScratchDirGuard {
+    #[track_caller]
     fn new(label: &str) -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!("codexus-{label}-{}", Uuid::new_v4()));
+        let path = deterministic_scratch_path(label, Location::caller());
         std::fs::create_dir_all(&path)
             .map_err(|err| format!("failed to create scratch dir {}: {err}", path.display()))?;
         Ok(Self { path })
@@ -58,6 +61,17 @@ impl Drop for ScratchDirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+fn deterministic_scratch_path(label: &str, location: &Location<'_>) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(label.as_bytes());
+    hasher.update(location.file().as_bytes());
+    hasher.update(location.line().to_le_bytes());
+    hasher.update(location.column().to_le_bytes());
+    hasher.update(format!("{:?}", std::thread::current().id()).as_bytes());
+    let digest = hex::encode(hasher.finalize());
+    std::env::temp_dir().join(format!("codexus-{label}-{}", &digest[..16]))
 }
 
 fn ensure_real_server_opt_in() -> Result<(), String> {
@@ -514,17 +528,13 @@ async fn appserver_roundtrip_attempt(cwd: String) -> Result<(), String> {
             .ok_or_else(|| format!("appserver thread/start missing thread id in result: {response}"))?;
 
         let read = app
-            .request_typed::<ThreadReadSpec>(json!({
-                "threadId": thread_id.clone(),
-                "includeTurns": false
-            }))
+            .request_typed::<ThreadReadSpec>(crate::protocol::generated::types::ThreadReadParams {
+                thread_id: thread_id.clone(),
+                include_turns: Some(false),
+            })
             .await
             .map_err(|err| format!("appserver thread/read failed: {err}"))?;
-        let actual_thread_id = read
-            .get("thread")
-            .and_then(|thread| thread.get("id"))
-            .and_then(|id| id.as_str())
-            .ok_or_else(|| format!("appserver thread/read missing thread id in result: {read:?}"))?;
+        let actual_thread_id = read.thread.id.as_str();
         if actual_thread_id != thread_id {
             return Err(format!(
                 "appserver thread/read returned mismatched thread id: expected={thread_id} actual={}",
@@ -624,19 +634,15 @@ async fn appserver_approval_roundtrip_attempt() -> Result<(), String> {
                 .map_err(|err| format!("approval scenario file write failed: {err}"))?;
 
             let read = app
-                .request_typed::<ThreadReadSpec>(json!({
-                    "threadId": thread_id.clone(),
-                    "includeTurns": false
-                }))
+                .request_typed::<ThreadReadSpec>(
+                    crate::protocol::generated::types::ThreadReadParams {
+                        thread_id: thread_id.clone(),
+                        include_turns: Some(false),
+                    },
+                )
                 .await
                 .map_err(|err| format!("approval scenario thread/read failed: {err}"))?;
-            let actual_thread_id = read
-                .get("thread")
-                .and_then(|thread| thread.get("id"))
-                .and_then(|id| id.as_str())
-                .ok_or_else(|| {
-                    format!("approval scenario thread/read missing thread id in result: {read:?}")
-                })?;
+            let actual_thread_id = read.thread.id.as_str();
             if actual_thread_id != thread_id {
                 return Err(format!(
                     "approval scenario thread/read returned mismatched thread id: expected={thread_id} actual={}",
@@ -712,12 +718,11 @@ async fn quick_run_with_profile_reads_attached_core_api_file_against_real_codex_
 ) -> Result<(), String> {
     ensure_real_server_opt_in()?;
     let cwd = current_dir_utf8()?;
-    let plan_path = workspace_path_utf8("docs/API_REFERENCE.md")?;
+    let plan_path = workspace_path_utf8("README.md")?;
     let profile = RunProfile::new()
         .attach_path(plan_path)
         .with_timeout(Duration::from_secs(120));
-    let prompt =
-        "Read the attached API document and reply with only the sandbox policy field name.";
+    let prompt = "Read the attached repository README. Return exactly the camelCase field name used for sandbox policy in the API examples. Reply with only that token.";
 
     let out = run_with_retries("quick_run_with_profile attachment scenario", || {
         quick_run_with_profile_attempt(cwd.clone(), prompt, profile.clone())
@@ -727,6 +732,40 @@ async fn quick_run_with_profile_reads_attached_core_api_file_against_real_codex_
     if !contains_attached_doc_token(&out.assistant_text) {
         return Err(format!(
             "attachment scenario did not return expected API token {ATTACHED_DOC_TOKEN}: {}",
+            out.assistant_text
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "opt-in live test: requires real codex server"]
+async fn quick_run_with_profile_passes_attached_skill_against_real_codex_server(
+) -> Result<(), String> {
+    ensure_real_server_opt_in()?;
+    let cwd = current_dir_utf8()?;
+    let skill_path = workspace_path_utf8(".agents/skills/repo-cleanup-guard/SKILL.md")?;
+    let profile = RunProfile::new()
+        .attach_skill(ATTACHED_SKILL_NAME, skill_path)
+        .with_timeout(Duration::from_secs(120));
+    let prompt =
+        "An attached skill is provided. Return exactly the attached skill name and nothing else.";
+
+    let out = run_with_retries("quick_run_with_profile attached skill scenario", || {
+        quick_run_with_profile_attempt(cwd.clone(), prompt, profile.clone())
+    })
+    .await?;
+    assert_prompt_result_non_empty("real-server quick_run_with_profile attached skill", &out)?;
+
+    let normalized: String = out
+        .assistant_text
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .flat_map(|ch| ch.to_lowercase())
+        .collect();
+    if normalized != ATTACHED_SKILL_NAME {
+        return Err(format!(
+            "attached skill scenario did not return expected skill name {ATTACHED_SKILL_NAME}: {}",
             out.assistant_text
         ));
     }

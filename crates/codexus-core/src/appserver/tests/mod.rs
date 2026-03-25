@@ -1,7 +1,6 @@
 use crate::runtime::turn_output::parse_thread_id;
-use crate::test_fixtures::TempDir;
+use crate::test_fixtures::{write_executable_script, TempDir};
 use serde_json::{json, Value};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -131,14 +130,7 @@ for line in sys.stdin:
     sys.stdout.flush()
 "#;
 
-    fs::write(&path, script).expect("write mock appserver cli");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 

@@ -2,6 +2,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use tokio::time::Duration;
 
+use crate::protocol::ClientRequestSpec;
 use crate::runtime::errors::{RpcError, RuntimeError};
 use crate::runtime::rpc_contract::{
     validate_rpc_request, validate_rpc_response, RpcValidationMode,
@@ -11,6 +12,60 @@ use super::rpc_io::{call_raw_inner, notify_raw_inner};
 use super::Runtime;
 
 impl Runtime {
+    pub async fn request_typed<M>(
+        &self,
+        params: impl Into<M::Params>,
+    ) -> Result<M::Response, RpcError>
+    where
+        M: ClientRequestSpec,
+    {
+        self.call_typed_validated(M::META.wire_name, params.into())
+            .await
+    }
+
+    pub async fn request_typed_with_mode<M>(
+        &self,
+        params: impl Into<M::Params>,
+        mode: RpcValidationMode,
+    ) -> Result<M::Response, RpcError>
+    where
+        M: ClientRequestSpec,
+    {
+        self.call_typed_validated_with_mode(M::META.wire_name, params.into(), mode)
+            .await
+    }
+
+    pub async fn request_typed_with_mode_and_timeout<M>(
+        &self,
+        params: impl Into<M::Params>,
+        mode: RpcValidationMode,
+        timeout_duration: Duration,
+    ) -> Result<M::Response, RpcError>
+    where
+        M: ClientRequestSpec,
+    {
+        let params_value = serde_json::to_value(params.into()).map_err(|err| {
+            RpcError::InvalidRequest(format!(
+                "failed to serialize json-rpc params for {}: {err}",
+                M::META.wire_name
+            ))
+        })?;
+        let result = self
+            .call_validated_with_mode_and_timeout(
+                M::META.wire_name,
+                params_value,
+                mode,
+                timeout_duration,
+            )
+            .await?;
+        serde_json::from_value(result).map_err(|err| {
+            RpcError::InvalidRequest(format!(
+                "failed to deserialize json-rpc result for {}: {err}",
+                M::META.wire_name
+            ))
+        })
+    }
+
     pub async fn call_raw(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         self.call_raw_internal(method, params, true, self.inner.spec.rpc_response_timeout)
             .await

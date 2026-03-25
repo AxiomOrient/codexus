@@ -1,8 +1,12 @@
+use crate::protocol;
 use crate::runtime::core::Runtime;
 use crate::runtime::errors::RpcError;
 use crate::runtime::rpc_contract::methods;
 
-use super::wire::{command_exec_params_to_wire, deserialize_result, serialize_params};
+use super::wire::{
+    command_exec_params, command_exec_resize_params, command_exec_terminate_params,
+    command_exec_write_params, deserialize_protocol_response,
+};
 use super::*;
 
 impl Runtime {
@@ -14,9 +18,9 @@ impl Runtime {
         p: CommandExecParams,
     ) -> Result<CommandExecResponse, RpcError> {
         let response = self
-            .call_validated(methods::COMMAND_EXEC, command_exec_params_to_wire(&p))
+            .request_typed::<protocol::client_requests::OneOffCommandExec>(command_exec_params(&p))
             .await?;
-        deserialize_result(methods::COMMAND_EXEC, response)
+        deserialize_protocol_response(methods::COMMAND_EXEC, &response)
     }
 
     /// Write stdin bytes to a running standalone command or close stdin.
@@ -26,11 +30,12 @@ impl Runtime {
         &self,
         p: CommandExecWriteParams,
     ) -> Result<CommandExecWriteResponse, RpcError> {
-        let params = serialize_params(methods::COMMAND_EXEC_WRITE, &p)?;
         let response = self
-            .call_validated(methods::COMMAND_EXEC_WRITE, params)
+            .request_typed::<protocol::client_requests::CommandExecWrite>(
+                command_exec_write_params(&p),
+            )
             .await?;
-        deserialize_result(methods::COMMAND_EXEC_WRITE, response)
+        deserialize_protocol_response(methods::COMMAND_EXEC_WRITE, &response)
     }
 
     /// Resize one PTY-backed standalone command by client process id.
@@ -40,11 +45,12 @@ impl Runtime {
         &self,
         p: CommandExecResizeParams,
     ) -> Result<CommandExecResizeResponse, RpcError> {
-        let params = serialize_params(methods::COMMAND_EXEC_RESIZE, &p)?;
         let response = self
-            .call_validated(methods::COMMAND_EXEC_RESIZE, params)
+            .request_typed::<protocol::client_requests::CommandExecResize>(
+                command_exec_resize_params(&p),
+            )
             .await?;
-        deserialize_result(methods::COMMAND_EXEC_RESIZE, response)
+        deserialize_protocol_response(methods::COMMAND_EXEC_RESIZE, &response)
     }
 
     /// Terminate one standalone command by client process id.
@@ -54,10 +60,11 @@ impl Runtime {
         &self,
         p: CommandExecTerminateParams,
     ) -> Result<CommandExecTerminateResponse, RpcError> {
-        let params = serialize_params(methods::COMMAND_EXEC_TERMINATE, &p)?;
         let response = self
-            .call_validated(methods::COMMAND_EXEC_TERMINATE, params)
+            .request_typed::<protocol::client_requests::CommandExecTerminate>(
+                command_exec_terminate_params(&p),
+            )
             .await?;
-        deserialize_result(methods::COMMAND_EXEC_TERMINATE, response)
+        deserialize_protocol_response(methods::COMMAND_EXEC_TERMINATE, &response)
     }
 }

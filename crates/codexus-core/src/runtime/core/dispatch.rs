@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration, MissedTickBehavior};
 
 use crate::plugin::{HookContext, HookPhase, HookReport};
-use crate::runtime::approvals::{ServerRequest, TimeoutAction};
+use crate::runtime::approvals::{ServerRequest, TimeoutAction, UnknownServerRequestPolicy};
 use crate::runtime::errors::RuntimeError;
 use crate::runtime::events::{Direction, Envelope, JsonRpcId, MsgKind};
 use crate::runtime::metrics::RuntimeMetrics;
@@ -16,7 +16,10 @@ use crate::runtime::rpc_contract::methods;
 use crate::runtime::sink::EventSink;
 use crate::runtime::{api::tool_use_hooks, now_millis};
 
-use super::io_policy::{compute_deadline_millis, timeout_error_payload, timeout_result_payload};
+use super::io_policy::{
+    compute_deadline_millis, describe_server_request, timeout_error_payload,
+    timeout_result_payload, validate_payload_contract, PayloadContract, ServerRequestPlanKind,
+};
 use super::rpc_io::resolve_transport_closed_pending;
 use super::state_projection::{
     state_apply_envelope, state_insert_pending_server_request, state_remove_pending_server_request,
@@ -59,7 +62,28 @@ pub(super) async fn dispatcher_loop(inner: Arc<RuntimeInner>, mut read_rx: mpsc:
             MsgKind::ServerRequest => {
                 if let (Some(id), Some(method)) = (request_id, metadata.method.as_deref()) {
                     let params = json.get("params").cloned().unwrap_or(Value::Null);
-                    queue_server_request(&inner, id, method, params).await;
+                    match crate::protocol::codecs::decode_server_request(method, params.clone()) {
+                        Some(crate::protocol::codecs::ServerRequestEnvelope::Unknown(_)) => {
+                            handle_unknown_server_request(&inner, id, method, params).await;
+                        }
+                        Some(_) => {
+                            queue_server_request(&inner, id, method, params).await;
+                        }
+                        None => {
+                            // Known method but params failed to deserialize — send Invalid params
+                            // rather than silently dropping the request (which would leave the
+                            // server hanging with no response).
+                            let _ = send_rpc_error(
+                                &inner,
+                                &id,
+                                json!({
+                                    "code": -32602,
+                                    "message": format!("invalid params for server request: {method}"),
+                                }),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
             MsgKind::Notification | MsgKind::Unknown => {}
@@ -216,6 +240,30 @@ async fn queue_server_request(
     }
 }
 
+async fn handle_unknown_server_request(
+    inner: &Arc<RuntimeInner>,
+    rpc_id: JsonRpcId,
+    method: &str,
+    params: Value,
+) {
+    match inner.spec.server_request_cfg.on_unknown {
+        UnknownServerRequestPolicy::QueueForCaller => {
+            queue_server_request(inner, rpc_id, method, params).await;
+        }
+        UnknownServerRequestPolicy::ReturnMethodNotFound => {
+            let _ = send_rpc_error(
+                inner,
+                &rpc_id,
+                json!({
+                    "code": -32601,
+                    "message": format!("unknown server request method: {method}"),
+                }),
+            )
+            .await;
+        }
+    }
+}
+
 /// Run pre-tool-use hooks for a server request before it is queued for approval.
 /// rpc_key is computed internally and only after both early-exit guards pass, so the common case
 /// (no hooks configured, or non-approval method) pays zero allocation cost.
@@ -305,95 +353,142 @@ async fn respond_with_timeout_policy(
     }
 
     match inner.spec.server_request_cfg.on_timeout {
-        TimeoutAction::Decline => {
-            send_rpc_result(inner, rpc_id, timeout_result_payload(method, false)).await
-        }
-        TimeoutAction::Cancel => {
-            send_rpc_result(inner, rpc_id, timeout_result_payload(method, true)).await
+        TimeoutAction::Decline | TimeoutAction::Cancel => {
+            let cancel = matches!(
+                inner.spec.server_request_cfg.on_timeout,
+                TimeoutAction::Cancel
+            );
+            match plan_timeout_server_request_result(method, cancel) {
+                Ok(planned) => send_rpc_result(inner, rpc_id, planned.value).await,
+                // Unknown methods (QueueForCaller) have no typed decline payload — send an error
+                // so the server always receives a response rather than hanging indefinitely.
+                Err(_) => send_timeout_error(inner, rpc_id, method).await,
+            }
         }
         TimeoutAction::Error => send_timeout_error(inner, rpc_id, method).await,
     }
 }
 
-pub(super) fn validate_server_request_result_payload(
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct PlannedServerRequestResult {
+    pub value: Value,
+}
+
+pub(super) fn plan_server_request_result(
     method: &str,
     result: &Value,
-) -> Result<(), RuntimeError> {
-    match method {
-        methods::ITEM_COMMAND_EXECUTION_REQUEST_APPROVAL
-        | methods::ITEM_FILE_CHANGE_REQUEST_APPROVAL => validate_approval_payload(method, result),
-        methods::ITEM_TOOL_REQUEST_USER_INPUT => validate_request_user_input_payload(result),
-        methods::ITEM_TOOL_CALL => validate_dynamic_tool_call_payload(result),
-        methods::ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH => validate_auth_refresh_payload(result),
-        _ => Ok(()),
+) -> Result<PlannedServerRequestResult, RuntimeError> {
+    // Unknown methods (queued via QueueForCaller) have no typed codec — send the caller's result
+    // as-is so that agents handling proprietary server requests can respond without error.
+    if !crate::runtime::approvals::is_known_server_request_method(method) {
+        return Ok(PlannedServerRequestResult {
+            value: result.clone(),
+        });
+    }
+    let request = decode_known_server_request_for_planning(method)?;
+    let response = normalize_server_request_result(&request, result)?;
+    encode_planned_server_request_result(&request, response)
+}
+
+pub(super) fn plan_timeout_server_request_result(
+    method: &str,
+    cancel: bool,
+) -> Result<PlannedServerRequestResult, RuntimeError> {
+    let request = decode_known_server_request_for_planning(method)?;
+    let response = timeout_result_payload(&request, cancel)?;
+    encode_planned_server_request_result(&request, response)
+}
+
+fn decode_known_server_request_for_planning(
+    method: &str,
+) -> Result<crate::protocol::codecs::ServerRequestEnvelope, RuntimeError> {
+    let request = crate::protocol::codecs::decode_server_request(method, Value::Object(Map::new()))
+        .ok_or_else(|| {
+            RuntimeError::Internal(format!("unknown server request method: {method}"))
+        })?;
+    match request {
+        crate::protocol::codecs::ServerRequestEnvelope::Unknown(_) => Err(RuntimeError::Internal(
+            format!("unknown server request method: {method}"),
+        )),
+        other => Ok(other),
     }
 }
 
-fn validate_approval_payload(method: &str, result: &Value) -> Result<(), RuntimeError> {
-    match result.get("decision") {
-        Some(Value::String(_)) => Ok(()),
-        Some(Value::Object(obj)) if !obj.is_empty() => Ok(()),
-        _ => Err(RuntimeError::Internal(format!(
-            "invalid approval payload for {method}: missing decision"
-        ))),
+fn encode_planned_server_request_result(
+    request: &crate::protocol::codecs::ServerRequestEnvelope,
+    response: crate::protocol::codecs::ServerRequestResponse,
+) -> Result<PlannedServerRequestResult, RuntimeError> {
+    crate::protocol::codecs::encode_server_request_response(request, response)
+        .map(|value| PlannedServerRequestResult { value })
+        .map_err(|err| {
+            RuntimeError::Internal(format!("encode server request response failed: {err}"))
+        })
+}
+
+fn normalize_server_request_result(
+    request: &crate::protocol::codecs::ServerRequestEnvelope,
+    result: &Value,
+) -> Result<crate::protocol::codecs::ServerRequestResponse, RuntimeError> {
+    let descriptor = describe_server_request(request)?;
+    match descriptor.kind {
+        ServerRequestPlanKind::CommandExecutionRequestApproval => Ok(
+            crate::protocol::codecs::ServerRequestResponse::CommandExecutionRequestApproval(
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
+            ),
+        ),
+        ServerRequestPlanKind::FileChangeRequestApproval => Ok(
+            crate::protocol::codecs::ServerRequestResponse::FileChangeRequestApproval(
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
+            ),
+        ),
+        ServerRequestPlanKind::ToolRequestUserInput => Ok(
+            crate::protocol::codecs::ServerRequestResponse::ToolRequestUserInput(
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
+            ),
+        ),
+        ServerRequestPlanKind::McpServerElicitationRequest => Ok(
+            crate::protocol::codecs::ServerRequestResponse::McpServerElicitationRequest(
+                plan_payload_by_contract::<
+                    crate::protocol::generated::McpServerElicitationRequestResponse,
+                >(result, &descriptor.payload_contract)?,
+            ),
+        ),
+        ServerRequestPlanKind::PermissionsRequestApproval => Ok(
+            crate::protocol::codecs::ServerRequestResponse::PermissionsRequestApproval(
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
+            ),
+        ),
+        ServerRequestPlanKind::DynamicToolCall => Ok(
+            crate::protocol::codecs::ServerRequestResponse::DynamicToolCall(
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
+            ),
+        ),
+        ServerRequestPlanKind::ChatgptAuthTokensRefresh => Ok(
+            crate::protocol::codecs::ServerRequestResponse::ChatgptAuthTokensRefresh(
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
+            ),
+        ),
     }
 }
 
-fn validate_request_user_input_payload(result: &Value) -> Result<(), RuntimeError> {
-    let obj = require_object(result, "invalid requestUserInput payload: expected object")?;
-    if !matches!(obj.get("answers"), Some(Value::Object(_))) {
-        return Err(RuntimeError::Internal(
-            "invalid requestUserInput payload: missing answers object".to_owned(),
-        ));
-    }
-    Ok(())
+fn plan_payload_by_contract<T>(
+    result: &Value,
+    contract: &PayloadContract,
+) -> Result<T, RuntimeError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    validate_payload_contract(result, contract)?;
+    plan_typed_payload(result)
 }
 
-fn validate_dynamic_tool_call_payload(result: &Value) -> Result<(), RuntimeError> {
-    let obj = require_object(result, "invalid dynamic tool call payload: expected object")?;
-    if !matches!(obj.get("success"), Some(Value::Bool(_))) {
-        return Err(RuntimeError::Internal(
-            "invalid dynamic tool call payload: missing success boolean".to_owned(),
-        ));
-    }
-    if !matches!(obj.get("contentItems"), Some(Value::Array(_))) {
-        return Err(RuntimeError::Internal(
-            "invalid dynamic tool call payload: missing contentItems array".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_auth_refresh_payload(result: &Value) -> Result<(), RuntimeError> {
-    let obj = require_object(result, "invalid auth refresh payload: expected object")?;
-    if !matches!(obj.get("accessToken"), Some(Value::String(_))) {
-        return Err(RuntimeError::Internal(
-            "invalid auth refresh payload: missing accessToken".to_owned(),
-        ));
-    }
-    if !matches!(obj.get("chatgptAccountId"), Some(Value::String(_))) {
-        return Err(RuntimeError::Internal(
-            "invalid auth refresh payload: missing chatgptAccountId".to_owned(),
-        ));
-    }
-    if !matches!(
-        obj.get("chatgptPlanType"),
-        None | Some(Value::String(_)) | Some(Value::Null)
-    ) {
-        return Err(RuntimeError::Internal(
-            "invalid auth refresh payload: chatgptPlanType must be string|null".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn require_object<'a>(
-    value: &'a Value,
-    err_message: &'static str,
-) -> Result<&'a Map<String, Value>, RuntimeError> {
-    value
-        .as_object()
-        .ok_or_else(|| RuntimeError::Internal(err_message.to_owned()))
+fn plan_typed_payload<T>(result: &Value) -> Result<T, RuntimeError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value(result.clone()).map_err(|err| {
+        RuntimeError::Internal(format!("server request response decode failed: {err}"))
+    })
 }
 
 fn record_event_sink_drop(inner: &Arc<RuntimeInner>, envelope: &Envelope, reason: &'static str) {
@@ -460,5 +555,96 @@ fn jsonrpc_state_key(id: &JsonRpcId) -> String {
     match id {
         JsonRpcId::Number(v) => format!("n:{v}"),
         JsonRpcId::Text(v) => format!("s:{v}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::core::io_policy::{describe_server_request, ServerRequestPlanKind};
+    use serde_json::json;
+
+    #[test]
+    fn plans_timeout_result_with_generated_tool_input_shape() {
+        let planned =
+            plan_timeout_server_request_result(methods::ITEM_TOOL_REQUEST_USER_INPUT, false)
+                .expect("plan timeout result");
+        assert_eq!(planned.value, json!({"answers": {}}));
+    }
+
+    #[test]
+    fn plans_validated_dynamic_tool_call_result() {
+        let planned = plan_server_request_result(
+            methods::ITEM_TOOL_CALL,
+            &json!({"success": true, "contentItems": []}),
+        )
+        .expect("plan dynamic tool call result");
+        assert_eq!(planned.value, json!({"success": true, "contentItems": []}));
+    }
+
+    #[test]
+    fn all_generated_known_server_requests_have_plannable_result_paths() {
+        use crate::protocol::generated::inventory::SERVER_REQUESTS;
+
+        for meta in SERVER_REQUESTS {
+            let request = crate::protocol::codecs::decode_server_request(meta.wire_name, json!({}))
+                .expect("decode known request");
+            let descriptor = describe_server_request(&request)
+                .unwrap_or_else(|err| panic!("missing descriptor for '{}': {err}", meta.wire_name));
+
+            match descriptor.kind {
+                ServerRequestPlanKind::ChatgptAuthTokensRefresh => {
+                    assert!(
+                        plan_timeout_server_request_result(meta.wire_name, false).is_err(),
+                        "auth refresh timeout should stay on error path for '{}'",
+                        meta.wire_name
+                    );
+                }
+                _ => {
+                    let timeout = plan_timeout_server_request_result(meta.wire_name, false)
+                        .unwrap_or_else(|err| {
+                            panic!("missing timeout planner for '{}': {err}", meta.wire_name)
+                        });
+                    assert!(
+                        timeout.value.is_object(),
+                        "timeout planner for '{}' must encode an object payload",
+                        meta.wire_name
+                    );
+                }
+            }
+
+            let result = sample_result_for_kind(descriptor.kind);
+            let planned =
+                plan_server_request_result(meta.wire_name, &result).unwrap_or_else(|err| {
+                    panic!("missing result planner for '{}': {err}", meta.wire_name)
+                });
+            assert!(
+                planned.value.is_object(),
+                "result planner for '{}' must encode an object payload",
+                meta.wire_name
+            );
+        }
+    }
+
+    fn sample_result_for_kind(kind: ServerRequestPlanKind) -> serde_json::Value {
+        match kind {
+            ServerRequestPlanKind::CommandExecutionRequestApproval
+            | ServerRequestPlanKind::FileChangeRequestApproval
+            | ServerRequestPlanKind::PermissionsRequestApproval => {
+                json!({"decision": "accept"})
+            }
+            ServerRequestPlanKind::McpServerElicitationRequest => {
+                json!({"action": "accept", "content": null})
+            }
+            ServerRequestPlanKind::ToolRequestUserInput => json!({"answers": {}}),
+            ServerRequestPlanKind::DynamicToolCall => {
+                json!({"success": true, "contentItems": []})
+            }
+            ServerRequestPlanKind::ChatgptAuthTokensRefresh => json!({
+                "accessToken": "token",
+                "chatgptAccountId": "acct",
+                "chatgptPlanType": null
+            }),
+        }
     }
 }

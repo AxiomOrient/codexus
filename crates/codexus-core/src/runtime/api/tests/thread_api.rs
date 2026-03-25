@@ -206,8 +206,7 @@ async fn thread_resume_requires_thread_id_in_response() {
 
     match err {
         RpcError::InvalidRequest(message) => {
-            assert!(message.contains("invalid json-rpc response for thread/resume"));
-            assert!(message.contains("result is missing thread id"));
+            assert!(message.contains("thread/resume missing thread id in result"));
         }
         other => panic!("unexpected error: {other:?}"),
     }

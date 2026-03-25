@@ -4,6 +4,8 @@
 
 Build `codexus` around a **generated typed protocol core, thin runtime, and thin human layer** while preserving exact Codex AppServer JSON-RPC interoperability.
 
+This document is the release contract. `README.md` explains usage; this spec defines what must be true for release.
+
 ### Required properties
 1. Every upstream method has a first-class representation.
 2. Every upstream server request is typed and routable.
@@ -789,12 +791,14 @@ The work is done only when all statements below are true.
 
 5. Unknown server requests are not auto-declined by default.
 
-6. CI blocks drift automatically.
+6. CI blocks protocol drift, formatting drift, clippy regressions, and workspace test regressions automatically.
 
 7. Docs clearly separate:
    - full generated protocol layer
    - ergonomic runtime layer
    - raw custom layer
+
+8. Human-facing repository docs stay limited to `README.md` and `docs/specs/product-spec.md`.
 
 ---
 
@@ -818,3 +822,18 @@ The correct implementation strategy is:
 - **generate the complete protocol surface from upstream**
 - keep ergonomic APIs thin and optional on top
 - enforce parity continuously in CI
+
+Human-facing repository docs are limited to `README.md` and `docs/specs/product-spec.md`.
+
+---
+
+## 20. Release review
+
+Release is acceptable only when all of the following are true:
+
+- generated protocol output matches the checked-in upstream snapshot
+- `cargo fmt --all --check` passes
+- `cargo clippy --workspace --all-targets -- -D warnings` passes
+- `cargo test --workspace` passes
+- ignored real-server tests are green in an approved environment
+- no secondary human-facing docs drift away from `README.md` and this spec

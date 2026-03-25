@@ -38,33 +38,20 @@ pub(super) async fn wait_for_transport_close_signal(inner: &Arc<RuntimeInner>) -
     }
 }
 
-/// Exponential restart backoff with bounded jitter.
+/// Exponential restart backoff with optional jitter.
+///
+/// `jitter_ms` adds a random offset to the base delay — callers derive it from subsecond
+/// system time to spread fleet-wide restarts. Pass 0 in tests for deterministic assertions.
 /// Allocation: none. Complexity: O(1).
 pub(super) fn compute_restart_delay(
     attempt: u32,
     base_backoff_ms: u64,
     max_backoff_ms: u64,
+    jitter_ms: u64,
 ) -> Duration {
     let exp = attempt.min(20);
     let scaled = base_backoff_ms.saturating_mul(1u64 << exp);
-    let base_delay_ms = scaled.min(max_backoff_ms);
-    let jitter_cap_ms = (base_delay_ms / 10).min(1_000);
-    let jitter_ms = if jitter_cap_ms == 0 {
-        0
-    } else {
-        pseudo_random_u64() % jitter_cap_ms.saturating_add(1)
-    };
-    Duration::from_millis(base_delay_ms.saturating_add(jitter_ms))
-}
-
-/// Lightweight seed source for restart jitter.
-/// Allocation: none. Complexity: O(1).
-fn pseudo_random_u64() -> u64 {
-    let t = now_millis() as u64;
-    let mut x = t ^ t.rotate_left(13) ^ 0x9E37_79B9_7F4A_7C15;
-    x ^= x << 7;
-    x ^= x >> 9;
-    x
+    Duration::from_millis(scaled.min(max_backoff_ms).saturating_add(jitter_ms))
 }
 
 pub(super) async fn supervisor_loop(inner: Arc<RuntimeInner>) {
@@ -114,8 +101,27 @@ pub(super) async fn supervisor_loop(inner: Arc<RuntimeInner>) {
                 }
 
                 state_set_connection(&inner, ConnectionState::Restarting { generation });
-                let delay =
-                    compute_restart_delay(restart_attempts, base_backoff_ms, max_backoff_ms);
+                // Derive jitter from subsecond system time: up to 25% of the base delay.
+                // Prevents all agents sharing the same config from hammering the server
+                // simultaneously after a crash (thundering herd).
+                let jitter_ms = {
+                    let base = base_backoff_ms.saturating_mul(1u64 << restart_attempts.min(20));
+                    let range = base.min(max_backoff_ms) / 4;
+                    if range > 0 {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.subsec_nanos() as u64 % range)
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                };
+                let delay = compute_restart_delay(
+                    restart_attempts,
+                    base_backoff_ms,
+                    max_backoff_ms,
+                    jitter_ms,
+                );
                 restart_attempts = restart_attempts.saturating_add(1);
                 tokio::select! {
                     _ = sleep(delay) => {}

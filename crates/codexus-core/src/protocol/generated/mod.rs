@@ -1,5 +1,6 @@
 pub mod client_notifications;
 pub mod client_requests;
+pub mod codecs;
 pub mod inventory;
 pub mod methods;
 pub mod server_notifications;

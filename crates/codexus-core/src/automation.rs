@@ -428,14 +428,13 @@ async fn mark_failed(
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
     use super::*;
     use crate::runtime::{Client, ClientConfig, SessionConfig};
-    use crate::test_fixtures::TempDir;
+    use crate::test_fixtures::{write_executable_script, TempDir};
 
     #[test]
     fn collapse_next_due_skips_missed_ticks() {
@@ -829,15 +828,7 @@ for line in sys.stdin:
             "__ALLOWED_RESUME_CALLS__",
             &allowed_resume_calls.to_string(),
         );
-        fs::write(&path, script).expect("write cli script");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(&path).expect("metadata").permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("set executable");
-        }
+        write_executable_script(&path, &script);
         path
     }
 }

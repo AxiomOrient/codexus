@@ -155,8 +155,8 @@ impl WebAdapter {
     }
 }
 
-pub fn new_session_id() -> String {
-    state::new_session_id()
+pub fn derive_session_id(tenant_id: &str, artifact_id: &str, thread_id: &str) -> String {
+    state::derive_session_id(tenant_id, artifact_id, thread_id)
 }
 
 pub fn serialize_sse_envelope(envelope: &Envelope) -> Result<String, WebError> {

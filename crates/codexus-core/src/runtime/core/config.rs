@@ -9,7 +9,7 @@ use tokio::time::Duration;
 use crate::runtime::approvals::ServerRequestConfig;
 use crate::runtime::hooks::RuntimeHookConfig;
 use crate::runtime::sink::EventSink;
-use crate::runtime::state::StateProjectionLimits;
+use crate::runtime::state::{MemoryStateStore, StateProjectionLimits, StateStore};
 use crate::runtime::transport::{StdioProcessSpec, StdioTransportConfig};
 
 // ── Supervisor ────────────────────────────────────────────────────────────
@@ -88,6 +88,7 @@ pub struct RuntimeConfig {
     pub event_sink: Option<Arc<dyn EventSink>>,
     pub event_sink_channel_capacity: usize,
     pub state_projection_limits: StateProjectionLimits,
+    pub state_store: Arc<dyn StateStore>,
 }
 
 impl RuntimeConfig {
@@ -114,6 +115,7 @@ impl RuntimeConfig {
             event_sink: None,
             event_sink_channel_capacity: 1024,
             state_projection_limits: StateProjectionLimits::default(),
+            state_store: Arc::new(MemoryStateStore::new()),
         }
     }
 
@@ -127,6 +129,13 @@ impl RuntimeConfig {
     /// Override initialize capability switches while preserving other init params.
     pub fn with_initialize_capabilities(mut self, capabilities: InitializeCapabilities) -> Self {
         set_initialize_capabilities(&mut self.initialize_params, capabilities);
+        self
+    }
+
+    /// Override runtime snapshot store.
+    /// Store boundary is I/O only; reducer logic remains pure.
+    pub fn with_state_store(mut self, state_store: Arc<dyn StateStore>) -> Self {
+        self.state_store = state_store;
         self
     }
 }

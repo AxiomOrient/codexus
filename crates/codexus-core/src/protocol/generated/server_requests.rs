@@ -1,9 +1,7 @@
-use serde_json::Value;
-
 use super::types::*;
 
 macro_rules! define_server_request_specs {
-    ($($name:ident => $wire:literal, $stability:ident, $feature:ident),* $(,)?) => {
+    ($($name:ident => $wire:literal, $stability:ident, $feature:ident, $params_ty:expr, $result_ty:expr, $spec_params_ty:ty, $spec_result_ty:ty),* $(,)?) => {
         $(
             pub struct $name;
 
@@ -15,8 +13,8 @@ macro_rules! define_server_request_specs {
                     MethodSurface::ServerRequest,
                     Stability::$stability,
                     FeatureClass::$feature,
-                    "serde_json::Value",
-                    Some("serde_json::Value"),
+                    $params_ty,
+                    $result_ty,
                 );
             }
 
@@ -25,8 +23,8 @@ macro_rules! define_server_request_specs {
             }
 
             impl ServerRequestSpec for $name {
-                type Params = Value;
-                type Response = Value;
+                type Params = $spec_params_ty;
+                type Response = $spec_result_ty;
             }
         )*
 
@@ -37,11 +35,11 @@ macro_rules! define_server_request_specs {
 }
 
 define_server_request_specs! {
-    CommandExecutionRequestApproval => "item/commandExecution/requestApproval", Stable, Core,
-    FileChangeRequestApproval => "item/fileChange/requestApproval", Stable, Core,
-    ToolRequestUserInput => "item/tool/requestUserInput", Stable, Core,
-    McpServerElicitationRequest => "mcpServer/elicitation/request", Stable, Core,
-    PermissionsRequestApproval => "item/permissions/requestApproval", Stable, Core,
-    DynamicToolCall => "item/tool/call", Stable, Core,
-    ChatgptAuthTokensRefresh => "account/chatgptAuthTokens/refresh", Stable, Core,
+    CommandExecutionRequestApproval => "item/commandExecution/requestApproval", Stable, Core, "v2::CommandExecutionRequestApprovalParams", Some("v2::CommandExecutionRequestApprovalResponse"), CommandExecutionRequestApprovalParams, CommandExecutionRequestApprovalResponse,
+    FileChangeRequestApproval => "item/fileChange/requestApproval", Stable, Core, "v2::FileChangeRequestApprovalParams", Some("v2::FileChangeRequestApprovalResponse"), FileChangeRequestApprovalParams, FileChangeRequestApprovalResponse,
+    ToolRequestUserInput => "item/tool/requestUserInput", Stable, Core, "v2::ToolRequestUserInputParams", Some("v2::ToolRequestUserInputResponse"), ToolRequestUserInputParams, ToolRequestUserInputResponse,
+    McpServerElicitationRequest => "mcpServer/elicitation/request", Stable, Core, "v2::McpServerElicitationRequestParams", Some("v2::McpServerElicitationRequestResponse"), McpServerElicitationRequestParams, McpServerElicitationRequestResponse,
+    PermissionsRequestApproval => "item/permissions/requestApproval", Stable, Core, "v2::PermissionsRequestApprovalParams", Some("v2::PermissionsRequestApprovalResponse"), PermissionsRequestApprovalParams, PermissionsRequestApprovalResponse,
+    DynamicToolCall => "item/tool/call", Stable, Core, "v2::DynamicToolCallParams", Some("v2::DynamicToolCallResponse"), DynamicToolCallParams, DynamicToolCallResponse,
+    ChatgptAuthTokensRefresh => "account/chatgptAuthTokens/refresh", Stable, Core, "v2::ChatgptAuthTokensRefreshParams", Some("v2::ChatgptAuthTokensRefreshResponse"), ChatgptAuthTokensRefreshParams, ChatgptAuthTokensRefreshResponse,
 }

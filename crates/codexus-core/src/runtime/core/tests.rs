@@ -500,15 +500,13 @@ mod core_lifecycle {
     }
 
     #[test]
-    fn restart_delay_stays_within_base_and_jitter_bounds() {
+    fn restart_delay_is_exponential_backoff_with_cap() {
         for attempt in 0..8 {
-            let delay = supervisor::compute_restart_delay(attempt, 10, 160);
+            // Pass jitter_ms=0 to test the deterministic base delay in isolation.
+            let delay = supervisor::compute_restart_delay(attempt, 10, 160, 0);
             let delay_ms = delay.as_millis() as u64;
             let base_ms = (10u64.saturating_mul(1u64 << attempt)).min(160);
-            let jitter_cap_ms = (base_ms / 10).min(1_000);
-
-            assert!(delay_ms >= base_ms);
-            assert!(delay_ms <= base_ms + jitter_cap_ms);
+            assert_eq!(delay_ms, base_ms);
         }
     }
 
@@ -951,6 +949,7 @@ mod server_requests {
             let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
                 default_timeout_ms: 30_000,
                 on_timeout: TimeoutAction::Decline,
+                on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
             })
             .await;
             let mut live_rx = runtime.subscribe_live();
@@ -996,6 +995,7 @@ mod server_requests {
             cfg.server_requests = ServerRequestConfig {
                 default_timeout_ms: 30_000,
                 on_timeout: TimeoutAction::Decline,
+                on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
             };
             cfg.server_request_channel_capacity = 1;
             let runtime = Runtime::spawn_local(cfg).await.expect("runtime spawn");
@@ -1512,6 +1512,7 @@ mod server_requests {
             let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
                 default_timeout_ms: 50,
                 on_timeout: TimeoutAction::Decline,
+                on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
             })
             .await;
             let mut live_rx = runtime.subscribe_live();
@@ -1556,6 +1557,7 @@ mod server_requests {
             let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
                 default_timeout_ms: 50,
                 on_timeout: TimeoutAction::Decline,
+                on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
             })
             .await;
             let mut live_rx = runtime.subscribe_live();
@@ -1606,6 +1608,7 @@ mod server_requests {
             let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
                 default_timeout_ms: 50,
                 on_timeout: TimeoutAction::Decline,
+                on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
             })
             .await;
             let mut live_rx = runtime.subscribe_live();
@@ -1650,6 +1653,7 @@ mod server_requests {
             let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
                 default_timeout_ms: 50,
                 on_timeout: TimeoutAction::Decline,
+                on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
             })
             .await;
             let mut live_rx = runtime.subscribe_live();
@@ -1864,6 +1868,40 @@ mod server_requests {
 
             runtime.shutdown().await.expect("shutdown");
         }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn unknown_server_request_returns_method_not_found_when_policy_is_set() {
+            let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
+                default_timeout_ms: 30_000,
+                on_timeout: TimeoutAction::Decline,
+                on_unknown:
+                    crate::runtime::approvals::UnknownServerRequestPolicy::ReturnMethodNotFound,
+            })
+            .await;
+            let mut server_request_rx = runtime
+                .take_server_request_rx()
+                .await
+                .expect("take server request rx");
+
+            let result = runtime
+                .call_raw("probe_unknown", json!({}))
+                .await
+                .expect("probe_unknown call itself still succeeds");
+            assert_eq!(result["echoMethod"], "probe_unknown");
+
+            let dequeued = timeout(Duration::from_millis(200), server_request_rx.recv()).await;
+            assert!(
+                dequeued.is_err(),
+                "unknown request should not be queued when reject policy is set"
+            );
+            let snapshot = runtime.state_snapshot();
+            assert!(
+                snapshot.pending_server_requests.is_empty(),
+                "unknown request should not be retained in pending state under reject policy"
+            );
+
+            runtime.shutdown().await.expect("shutdown");
+        }
     }
 }
 
@@ -1904,6 +1942,7 @@ mod state_and_snapshot {
         let runtime = spawn_mock_runtime_with_server_cfg(ServerRequestConfig {
             default_timeout_ms: 2_000,
             on_timeout: TimeoutAction::Decline,
+            on_unknown: crate::runtime::approvals::UnknownServerRequestPolicy::QueueForCaller,
         })
         .await;
         let mut server_request_rx = runtime

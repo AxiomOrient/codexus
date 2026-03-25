@@ -12,8 +12,6 @@ struct ParsedMethod {
     experimental: bool,
 }
 
-const EXCLUDED_SERVER_NOTIFICATIONS: &[&str] = &["rawResponseItem/completed", "thread/compacted"];
-
 fn parse_methods(start_marker: &str, end_marker: &str, notification: bool) -> Vec<ParsedMethod> {
     let start = VENDORED_COMMON_RS
         .find(start_marker)
@@ -129,10 +127,7 @@ fn vendored_common_rs_matches_generated_inventory() {
         "server_notification_definitions! {",
         "client_notification_definitions! {",
         true,
-    )
-    .into_iter()
-    .filter(|method| !EXCLUDED_SERVER_NOTIFICATIONS.contains(&method.wire_name.as_str()))
-    .collect::<Vec<_>>();
+    );
 
     let actual_client_requests = inventory
         .client_requests
@@ -179,13 +174,13 @@ fn vendored_common_rs_matches_generated_inventory() {
     );
 }
 
-/// Doc contract gate: methods referenced in README / API_REFERENCE must exist in generated inventory.
+/// Doc contract gate: methods referenced in README examples must exist in generated inventory.
 /// If a public-facing example method name drifts from the protocol, this test fails.
 #[test]
 fn doc_contract_documented_entry_points_in_generated_inventory() {
     let inv = inventory();
 
-    // Methods mentioned explicitly in README and API_REFERENCE code examples.
+    // Methods mentioned explicitly in README code examples.
     let documented_methods: &[&str] = &[
         "initialize",
         "thread/start",
@@ -226,4 +221,162 @@ fn decode_notification_roundtrips_value_payload() {
         .expect("decode notification payload");
 
     assert_eq!(decoded, payload);
+}
+
+#[test]
+fn all_known_server_requests_decode_to_generated_envelope() {
+    let inv = inventory();
+    for meta in inv.server_requests {
+        let decoded = crate::protocol::codecs::decode_server_request(meta.wire_name, json!({}));
+        assert!(
+            decoded.is_some(),
+            "known server request '{}' must decode via generated codec",
+            meta.wire_name
+        );
+    }
+}
+
+#[test]
+fn stable_server_notifications_do_not_fall_back_to_unknown() {
+    let inv = inventory();
+    for meta in inv
+        .server_notifications
+        .iter()
+        .filter(|meta| meta.stability == Stability::Stable)
+    {
+        let decoded =
+            crate::protocol::codecs::decode_server_notification(meta.wire_name, json!({}))
+                .expect("stable notification must decode to an envelope");
+        assert!(
+            !matches!(
+                decoded,
+                crate::protocol::codecs::ServerNotificationEnvelope::Unknown(_)
+            ),
+            "stable notification '{}' must not decode to Unknown",
+            meta.wire_name
+        );
+    }
+}
+
+#[test]
+fn generated_client_request_validators_cover_generated_inventory() {
+    let inventory = inventory();
+    let validators = crate::protocol::generated::validators::CLIENT_REQUEST_VALIDATORS;
+
+    assert_eq!(
+        validators.len(),
+        inventory.client_requests.len(),
+        "generated validator count must stay aligned with generated client request inventory"
+    );
+
+    for meta in inventory.client_requests {
+        assert!(
+            validators
+                .iter()
+                .any(|validator| validator.wire_name == meta.wire_name),
+            "missing generated client request validator for '{}'",
+            meta.wire_name
+        );
+    }
+}
+
+#[test]
+fn stable_client_requests_do_not_expose_value_contracts() {
+    fn is_raw_value_type(type_name: &str) -> bool {
+        matches!(type_name.trim(), "Value" | "serde_json::Value")
+    }
+
+    for meta in inventory()
+        .client_requests
+        .iter()
+        .filter(|meta| meta.stability == Stability::Stable)
+    {
+        assert!(
+            !is_raw_value_type(meta.params_type),
+            "stable client request '{}' must not expose Value params type: {}",
+            meta.wire_name,
+            meta.params_type
+        );
+        if let Some(result_type) = meta.result_type {
+            assert!(
+                !is_raw_value_type(result_type),
+                "stable client request '{}' must not expose Value result type: {}",
+                meta.wire_name,
+                result_type
+            );
+        }
+    }
+}
+
+#[test]
+fn docs_specs_uses_single_source_product_spec() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .ancestors()
+        .find(|path| path.join("docs/specs").is_dir())
+        .expect("repo root with docs/specs");
+    let specs_dir = repo_root.join("docs/specs");
+
+    let mut files = std::fs::read_dir(&specs_dir)
+        .expect("read docs/specs")
+        .map(|entry| {
+            entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    files.sort_unstable();
+
+    assert_eq!(
+        files,
+        vec!["product-spec.md".to_owned()],
+        "secondary spec files are not allowed in docs/specs"
+    );
+}
+
+#[test]
+fn xtask_codegen_check_is_clean() {
+    use std::process::Command;
+
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .ancestors()
+        .find(|path| path.join("tools/xtask").is_dir())
+        .expect("repo root");
+    let status = Command::new("cargo")
+        .args(["run", "-p", "xtask", "--", "protocol-codegen-check"])
+        .current_dir(repo_root)
+        .status()
+        .expect("run xtask codegen check");
+    assert!(status.success(), "protocol codegen check must pass");
+}
+
+#[test]
+fn ci_workflow_enforces_codegen_drift_gate() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .ancestors()
+        .find(|path| path.join(".github/workflows").is_dir())
+        .expect("repo root with github workflows");
+    let workflow_path = repo_root.join(".github/workflows/ci.yml");
+    let workflow = std::fs::read_to_string(&workflow_path).expect("read ci workflow");
+
+    assert!(
+        workflow.contains("cargo run -p xtask -- protocol-codegen-check"),
+        "ci workflow must run protocol-codegen-check"
+    );
+    assert!(
+        workflow.contains("cargo fmt --all --check"),
+        "ci workflow must run cargo fmt --all --check"
+    );
+    assert!(
+        workflow.contains("cargo test --workspace"),
+        "ci workflow must run cargo test --workspace"
+    );
+    assert!(
+        workflow.contains("cargo clippy --workspace --all-targets -- -D warnings"),
+        "ci workflow must run cargo clippy --workspace --all-targets -- -D warnings"
+    );
 }

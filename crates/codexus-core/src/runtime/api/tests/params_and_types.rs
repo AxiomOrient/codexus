@@ -31,7 +31,8 @@ fn maps_turn_start_params_to_wire_shape() {
         output_schema: Some(json!({"type":"object"})),
     };
 
-    let wire = turn_start_params_to_wire("thr_1", &params);
+    let wire = serde_json::to_value(turn_start_params("thr_1", &params))
+        .expect("serialize generated turn start params");
     assert_eq!(wire["threadId"], "thr_1");
     assert_eq!(wire["input"][0]["type"], "text");
     assert_eq!(wire["input"][0]["text"], "hello");
@@ -45,6 +46,27 @@ fn maps_turn_start_params_to_wire_shape() {
     assert_eq!(wire["serviceTier"], "fast");
     assert_eq!(wire["personality"], "pragmatic");
     assert_eq!(wire["outputSchema"]["type"], "object");
+}
+
+#[test]
+fn plans_generated_turn_steer_params_shape() {
+    let params = super::super::wire::turn_steer_params(
+        "thr_1",
+        "turn_1",
+        &[
+            InputItem::Text {
+                text: "continue".to_owned(),
+            },
+            InputItem::LocalImage {
+                path: "/tmp/a.png".to_owned(),
+            },
+        ],
+    );
+    let wire = serde_json::to_value(params).expect("serialize turn steer params");
+    assert_eq!(wire["threadId"], "thr_1");
+    assert_eq!(wire["expectedTurnId"], "turn_1");
+    assert_eq!(wire["input"][0]["type"], "text");
+    assert_eq!(wire["input"][1]["type"], "localImage");
 }
 
 #[test]
@@ -289,7 +311,7 @@ fn prompt_run_params_builder_overrides_defaults() {
         }))
         .allow_privileged_escalation()
         .attach_path("README.md")
-        .attach_path_with_placeholder("docs/API_REFERENCE.md", "core-doc")
+        .attach_path_with_placeholder("README.md", "core-doc")
         .attach_image_url("https://example.com/a.png")
         .attach_local_image("/tmp/a.png")
         .attach_skill("checks", "/tmp/skill")
@@ -327,7 +349,7 @@ fn prompt_run_params_builder_overrides_defaults() {
         PromptAttachment::AtPath {
             ref path,
             placeholder: Some(ref placeholder)
-        } if path == "docs/API_REFERENCE.md" && placeholder == "core-doc"
+        } if path == "README.md" && placeholder == "core-doc"
     ));
     assert!(matches!(
         params.attachments[2],
@@ -343,6 +365,63 @@ fn prompt_run_params_builder_overrides_defaults() {
             ref name,
             ref path
         } if name == "checks" && path == "/tmp/skill"
+    ));
+}
+
+#[test]
+fn prompt_run_thread_start_params_map_only_thread_defaults() {
+    let params = PromptRunParams::new("/work", "hello")
+        .with_model("gpt-5-codex")
+        .with_approval_policy(ApprovalPolicy::OnRequest)
+        .with_sandbox_policy(SandboxPolicy::Preset(SandboxPreset::WorkspaceWrite {
+            writable_roots: vec!["/work".to_owned()],
+            network_access: false,
+        }))
+        .allow_privileged_escalation();
+
+    let thread = super::super::wire::thread_start_params_from_prompt(&params);
+    assert_eq!(thread.cwd.as_deref(), Some("/work"));
+    assert_eq!(thread.model.as_deref(), Some("gpt-5-codex"));
+    assert_eq!(thread.approval_policy, Some(ApprovalPolicy::OnRequest));
+    assert_eq!(
+        thread.sandbox_policy,
+        Some(SandboxPolicy::Preset(SandboxPreset::WorkspaceWrite {
+            writable_roots: vec!["/work".to_owned()],
+            network_access: false,
+        }))
+    );
+    assert!(thread.privileged_escalation_approved);
+    assert_eq!(thread.model_provider, None);
+    assert_eq!(thread.service_name, None);
+    assert_eq!(thread.base_instructions, None);
+    assert_eq!(thread.developer_instructions, None);
+}
+
+#[test]
+fn prompt_run_turn_start_params_map_only_turn_defaults() {
+    let params = PromptRunParams::new("/work", "hello")
+        .with_model("gpt-5-codex")
+        .with_approval_policy(ApprovalPolicy::OnRequest)
+        .with_sandbox_policy(SandboxPolicy::Preset(SandboxPreset::ReadOnly))
+        .with_output_schema(json!({"type":"object"}))
+        .attach_path("README.md")
+        .allow_privileged_escalation();
+
+    let turn = super::super::wire::turn_start_params_from_prompt(&params, ReasoningEffort::High);
+    assert_eq!(turn.cwd.as_deref(), Some("/work"));
+    assert_eq!(turn.model.as_deref(), Some("gpt-5-codex"));
+    assert_eq!(turn.approval_policy, Some(ApprovalPolicy::OnRequest));
+    assert_eq!(
+        turn.sandbox_policy,
+        Some(SandboxPolicy::Preset(SandboxPreset::ReadOnly))
+    );
+    assert!(turn.privileged_escalation_approved);
+    assert_eq!(turn.effort, Some(ReasoningEffort::High));
+    assert_eq!(turn.summary, None);
+    assert_eq!(turn.output_schema, Some(json!({"type":"object"})));
+    assert!(matches!(
+        turn.input.first(),
+        Some(InputItem::TextWithElements { .. })
     ));
 }
 
@@ -367,7 +446,8 @@ fn maps_thread_start_params_to_wire_shape() {
         privileged_escalation_approved: true,
     };
 
-    let wire = thread_start_params_to_wire(&params);
+    let wire = serde_json::to_value(thread_start_params(&params))
+        .expect("serialize generated thread start params");
     assert_eq!(wire["model"], "gpt-5");
     assert_eq!(wire["modelProvider"], "openai");
     assert_eq!(wire["serviceTier"], Value::Null);
@@ -415,4 +495,25 @@ fn maps_thread_resume_overrides_to_supported_subset() {
     assert_eq!(wire["personality"], "friendly");
     assert!(!wire.contains_key("serviceName"));
     assert!(!wire.contains_key("ephemeral"));
+}
+
+#[test]
+fn plans_generated_thread_resume_and_interrupt_params() {
+    let resume = super::super::wire::thread_resume_params(
+        "thr_1",
+        &ThreadStartParams {
+            model: Some("gpt-5".to_owned()),
+            sandbox_policy: Some(SandboxPolicy::Preset(SandboxPreset::ReadOnly)),
+            ..ThreadStartParams::default()
+        },
+    );
+    let resume = serde_json::to_value(resume).expect("serialize thread resume params");
+    assert_eq!(resume["threadId"], "thr_1");
+    assert_eq!(resume["overrides"]["model"], "gpt-5");
+    assert_eq!(resume["overrides"]["sandboxPolicy"]["type"], "readOnly");
+
+    let interrupt = super::super::wire::turn_interrupt_params("thr_1", "turn_1");
+    let interrupt = serde_json::to_value(interrupt).expect("serialize turn interrupt params");
+    assert_eq!(interrupt["threadId"], "thr_1");
+    assert_eq!(interrupt["turnId"], "turn_1");
 }

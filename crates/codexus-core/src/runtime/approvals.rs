@@ -29,11 +29,20 @@ pub enum TimeoutAction {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UnknownServerRequestPolicy {
+    #[default]
+    QueueForCaller,
+    ReturnMethodNotFound,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerRequestConfig {
     pub default_timeout_ms: u64,
     pub on_timeout: TimeoutAction,
+    pub on_unknown: UnknownServerRequestPolicy,
 }
 
 impl Default for ServerRequestConfig {
@@ -41,6 +50,7 @@ impl Default for ServerRequestConfig {
         Self {
             default_timeout_ms: 30_000,
             on_timeout: TimeoutAction::Decline,
+            on_unknown: UnknownServerRequestPolicy::QueueForCaller,
         }
     }
 }
@@ -59,23 +69,24 @@ pub fn is_known_server_request_method(method: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::rpc_contract::methods;
 
     #[test]
     fn classifies_known_file_change_request() {
         assert!(is_known_server_request_method(
-            "item/fileChange/requestApproval"
+            methods::ITEM_FILE_CHANGE_REQUEST_APPROVAL
         ));
     }
 
     #[test]
     fn classifies_known_dynamic_tool_call_request() {
-        assert!(is_known_server_request_method("item/tool/call"));
+        assert!(is_known_server_request_method(methods::ITEM_TOOL_CALL));
     }
 
     #[test]
     fn classifies_known_auth_refresh_request() {
         assert!(is_known_server_request_method(
-            "account/chatgptAuthTokens/refresh"
+            methods::ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH
         ));
     }
 
@@ -84,13 +95,13 @@ mod tests {
         let methods = known_server_request_methods();
         assert!(methods
             .iter()
-            .any(|meta| meta.wire_name == "item/fileChange/requestApproval"));
+            .any(|meta| meta.wire_name == methods::ITEM_FILE_CHANGE_REQUEST_APPROVAL));
         assert!(methods
             .iter()
-            .any(|meta| meta.wire_name == "item/tool/call"));
+            .any(|meta| meta.wire_name == methods::ITEM_TOOL_CALL));
         assert!(methods
             .iter()
-            .any(|meta| meta.wire_name == "account/chatgptAuthTokens/refresh"));
+            .any(|meta| meta.wire_name == methods::ACCOUNT_CHATGPT_AUTH_TOKENS_REFRESH));
     }
 
     #[test]
@@ -105,6 +116,7 @@ mod tests {
         let cfg = ServerRequestConfig::default();
         assert_eq!(cfg.default_timeout_ms, 30_000);
         assert_eq!(cfg.on_timeout, TimeoutAction::Decline);
+        assert_eq!(cfg.on_unknown, UnknownServerRequestPolicy::QueueForCaller);
     }
 
     #[test]

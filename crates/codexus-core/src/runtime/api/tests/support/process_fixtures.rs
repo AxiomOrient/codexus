@@ -1100,86 +1100,90 @@ for line in sys.stdin:
     crate::test_fixtures::python_inline_process(script)
 }
 
+async fn spawn_runtime_with_config(cfg: RuntimeConfig) -> Runtime {
+    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+}
+
 pub(crate) async fn spawn_mock_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_api_mock_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_mock_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_cross_thread_noise_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_cross_thread_noise_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_error_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_error_mock_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_turn_failed_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_turn_failed_mock_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_quota_exceeded_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_quota_exceeded_mock_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_effort_probe_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_effort_probe_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_mutation_probe_runtime(hooks: RuntimeHookConfig) -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_mutation_probe_process()).with_hooks(hooks);
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_streaming_timeout_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_streaming_timeout_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_interrupt_probe_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_interrupt_probe_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_thread_resume_missing_id_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_thread_resume_missing_id_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_thread_resume_mismatched_id_runtime() -> Runtime {
     let cfg = RuntimeConfig::new(python_thread_resume_mismatched_id_process());
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_lagged_completion_runtime() -> Runtime {
     let mut cfg = RuntimeConfig::new(python_run_prompt_lagged_completion_process());
     cfg.live_channel_capacity = 1;
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_lagged_completion_slow_thread_read_runtime() -> Runtime {
     let mut cfg =
         RuntimeConfig::new(python_run_prompt_lagged_completion_slow_thread_read_process());
     cfg.live_channel_capacity = 1;
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_lagged_cancelled_runtime() -> Runtime {
     let mut cfg = RuntimeConfig::new(python_run_prompt_lagged_cancelled_process());
     cfg.live_channel_capacity = 1;
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }
 
 pub(crate) async fn spawn_run_prompt_runtime_with_hooks(hooks: RuntimeHookConfig) -> Runtime {
     let cfg = RuntimeConfig::new(python_run_prompt_mock_process()).with_hooks(hooks);
-    Runtime::spawn_local(cfg).await.expect("spawn runtime")
+    spawn_runtime_with_config(cfg).await
 }

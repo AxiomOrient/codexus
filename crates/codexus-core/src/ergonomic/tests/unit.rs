@@ -4,9 +4,8 @@ use crate::runtime::{
     ApprovalPolicy, InitializeCapabilities, PromptRunError, PromptRunResult, ReasoningEffort,
     RunProfile, RuntimeError, SandboxPolicy,
 };
-use crate::test_fixtures::TempDir;
+use crate::test_fixtures::{write_executable_script, TempDir};
 use serde_json::json;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,14 +68,7 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"id": rpc_id, "result": {"ok": True}}) + "\n")
     sys.stdout.flush()
 "#;
-    fs::write(&path, script).expect("write mock cli");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path).expect("script metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&path, perms).expect("set script executable");
-    }
+    write_executable_script(&path, script);
     path
 }
 

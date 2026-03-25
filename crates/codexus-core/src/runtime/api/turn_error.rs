@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::runtime::events::Envelope;
+use crate::runtime::rpc_contract::methods;
 
 use super::{PromptTurnFailure, PromptTurnFailureKind, PromptTurnTerminalState};
 
@@ -50,7 +51,7 @@ fn signals_quota_exhausted(msg: &str) -> bool {
 /// Allocation: one signal struct only when error exists. Complexity: O(1).
 pub(super) fn extract_turn_error_signal(envelope: &Envelope) -> Option<PromptTurnErrorSignal> {
     let method = envelope.method.as_deref()?;
-    if method != "error" && method != "turn/failed" {
+    if method != methods::ERROR && method != methods::TURN_FAILED {
         return None;
     }
 
@@ -160,7 +161,6 @@ mod tests {
     fn is_rate_limited_does_not_trigger_quota_exceeded() {
         use crate::runtime::api::{PromptRunError, PromptTurnFailure, PromptTurnTerminalState};
 
-        // RateLimit is retryable with backoff and must NOT be treated as quota exhaustion.
         let rate_err = PromptRunError::TurnFailedWithContext(PromptTurnFailure {
             terminal_state: PromptTurnTerminalState::Failed,
             kind: PromptTurnFailureKind::RateLimit,

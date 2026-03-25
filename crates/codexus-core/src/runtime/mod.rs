@@ -35,7 +35,9 @@ pub use api::{
     ThreadTurnErrorView, ThreadTurnStatus, ThreadTurnView, ThreadView, TurnHandle, TurnStartParams,
     DEFAULT_REASONING_EFFORT,
 };
-pub use approvals::{ServerRequest, ServerRequestConfig, TimeoutAction};
+pub use approvals::{
+    ServerRequest, ServerRequestConfig, TimeoutAction, UnknownServerRequestPolicy,
+};
 pub use client::{
     Client, ClientConfig, ClientError, CompatibilityGuard, RunProfile, SemVerTriplet, Session,
     SessionConfig,
@@ -46,6 +48,7 @@ pub use hooks::RuntimeHookConfig;
 pub use metrics::RuntimeMetricsSnapshot;
 pub use rpc_contract::RpcValidationMode;
 pub use shell_hook::ShellCommandHook;
+pub use state::{JsonFileStateStore, MemoryStateStore, StateStore, StateStoreError};
 pub use transport::{StdioProcessSpec, StdioTransportConfig};
 
 pub type ServerRequestRx = tokio::sync::mpsc::Receiver<ServerRequest>;

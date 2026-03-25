@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::protocol::generated::validators::is_known_server_notification;
 use crate::protocol::methods;
 use crate::runtime::api::CommandExecOutputDeltaNotification;
 
@@ -53,7 +52,10 @@ pub enum RuntimeNotification {
     TurnFailed(TurnFailedNotification),
     TurnInterrupted(TurnInterruptedNotification),
     TurnCancelled(TurnCancelledNotification),
-    /// Any generated server notification not mapped to a specific typed variant above.
+    /// Generated protocol envelope for known notifications not yet projected
+    /// into narrower runtime-specific structs.
+    Protocol(crate::protocol::codecs::ServerNotificationEnvelope),
+    /// Unknown wire notification.
     Other {
         method: Arc<str>,
         params: Value,
@@ -170,14 +172,15 @@ pub fn decode_notification(envelope: &Envelope) -> Option<RuntimeNotification> {
         }
         _ => {
             let method = envelope.method.as_ref()?;
-            if is_known_server_notification(method) {
-                let params = envelope.json.get("params").cloned().unwrap_or(Value::Null);
-                Some(RuntimeNotification::Other {
-                    method: method.clone(),
-                    params,
-                })
-            } else {
-                None
+            let params = envelope.json.get("params").cloned().unwrap_or(Value::Null);
+            match crate::protocol::codecs::decode_server_notification(method, params.clone()) {
+                Some(crate::protocol::codecs::ServerNotificationEnvelope::Unknown(_)) | None => {
+                    Some(RuntimeNotification::Other {
+                        method: method.clone(),
+                        params,
+                    })
+                }
+                Some(generated) => Some(RuntimeNotification::Protocol(generated)),
             }
         }
     }
@@ -506,6 +509,56 @@ mod tests {
         let notification = extract_turn_cancelled(&envelope).expect("turn cancelled");
         assert_eq!(notification.thread_id, "thr_1");
         assert_eq!(notification.turn_id, "turn_1");
+    }
+
+    #[test]
+    fn known_generated_notification_is_not_other() {
+        let envelope = Envelope {
+            seq: 1,
+            ts_millis: 0,
+            direction: Direction::Inbound,
+            kind: MsgKind::Notification,
+            rpc_id: None,
+            method: Some(Arc::from("thread/status/changed")),
+            thread_id: Some(Arc::from("thr_1")),
+            turn_id: None,
+            item_id: None,
+            json: Arc::new(json!({
+                "method":"thread/status/changed",
+                "params":{"threadId":"thr_1","status":"running"}
+            })),
+        };
+
+        assert!(matches!(
+            decode_notification(&envelope),
+            Some(RuntimeNotification::Protocol(
+                crate::protocol::codecs::ServerNotificationEnvelope::ThreadStatusChanged(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn unknown_notification_maps_to_other() {
+        let envelope = Envelope {
+            seq: 1,
+            ts_millis: 0,
+            direction: Direction::Inbound,
+            kind: MsgKind::Notification,
+            rpc_id: None,
+            method: Some(Arc::from("unknown/customNotification")),
+            thread_id: None,
+            turn_id: None,
+            item_id: None,
+            json: Arc::new(json!({
+                "method":"unknown/customNotification",
+                "params":{"k":"v"}
+            })),
+        };
+
+        assert!(matches!(
+            decode_notification(&envelope),
+            Some(RuntimeNotification::Other { .. })
+        ));
     }
 
     #[test]

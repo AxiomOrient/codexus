@@ -16,7 +16,7 @@ pub use profile::{RunProfile, SessionConfig};
 pub use session::Session;
 
 use compat_guard::validate_runtime_compatibility;
-use profile::{prepared_prompt_run_from_profile, session_thread_start_params};
+use profile::prepared_prompt_run_from_profile;
 
 #[derive(Clone)]
 pub struct Client {
@@ -103,7 +103,10 @@ impl Client {
     pub async fn start_session(&self, config: SessionConfig) -> Result<Session, PromptRunError> {
         let thread = self
             .runtime
-            .thread_start_with_hooks(session_thread_start_params(&config), Some(&config.hooks))
+            .thread_start_with_hooks(
+                profile::session_thread_start_params(&config),
+                Some(&config.hooks),
+            )
             .await?;
 
         Ok(Session::new(self.runtime.clone(), thread.thread_id, config))
@@ -121,7 +124,7 @@ impl Client {
             .runtime
             .thread_resume_with_hooks(
                 thread_id,
-                session_thread_start_params(&config),
+                profile::session_thread_start_params(&config),
                 Some(&config.hooks),
             )
             .await?;
@@ -195,6 +198,11 @@ fn profile_to_prompt_params(
     profile: RunProfile,
 ) -> PromptRunParams {
     profile::profile_to_prompt_params(cwd, prompt, profile)
+}
+
+#[cfg(test)]
+fn session_thread_start_params(config: &SessionConfig) -> crate::runtime::api::ThreadStartParams {
+    profile::session_thread_start_params(config)
 }
 
 #[cfg(test)]

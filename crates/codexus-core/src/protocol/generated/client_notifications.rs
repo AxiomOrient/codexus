@@ -1,9 +1,7 @@
-use serde_json::Value;
-
 use super::types::*;
 
 macro_rules! define_client_notification_specs {
-    ($($name:ident => $wire:literal, $stability:ident, $feature:ident),* $(,)?) => {
+    ($($name:ident => $wire:literal, $stability:ident, $feature:ident, $params_ty:expr, $result_ty:expr, $spec_params_ty:ty),* $(,)?) => {
         $(
             pub struct $name;
 
@@ -15,8 +13,8 @@ macro_rules! define_client_notification_specs {
                     MethodSurface::ClientNotification,
                     Stability::$stability,
                     FeatureClass::$feature,
-                    "serde_json::Value",
-                    None,
+                    $params_ty,
+                    $result_ty,
                 );
             }
 
@@ -25,7 +23,7 @@ macro_rules! define_client_notification_specs {
             }
 
             impl ClientNotificationSpec for $name {
-                type Params = Value;
+                type Params = $spec_params_ty;
             }
         )*
 
@@ -36,5 +34,5 @@ macro_rules! define_client_notification_specs {
 }
 
 define_client_notification_specs! {
-    Initialized => "initialized", Stable, Core,
+    Initialized => "initialized", Stable, Core, "serde_json::Value", None, InitializedNotification,
 }

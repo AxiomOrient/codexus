@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::runtime::approvals::ServerRequest;
 use crate::runtime::events::Envelope;
+use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, RwLock};
-use uuid::Uuid;
 
 use super::{CreateSessionResponse, WebAdapterConfig, WebError};
 
@@ -73,7 +73,7 @@ pub(super) async fn register_session(
         });
     }
 
-    let session_id = new_session_id();
+    let session_id = derive_session_id(tenant_id, artifact_id, thread_id);
     let session = SessionRecord {
         session_id: session_id.clone(),
         tenant_id: tenant_id.to_owned(),
@@ -179,8 +179,19 @@ pub(super) async fn rollback_close_owned_session(
     Ok(())
 }
 
-pub(super) fn new_session_id() -> String {
-    format!("sess_{}", Uuid::new_v4())
+pub(super) fn derive_session_id(tenant_id: &str, artifact_id: &str, thread_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    update_session_id_hash(&mut hasher, tenant_id);
+    update_session_id_hash(&mut hasher, artifact_id);
+    update_session_id_hash(&mut hasher, thread_id);
+    let digest = hex::encode(hasher.finalize());
+    format!("sess_{}", &digest[..24])
+}
+
+fn update_session_id_hash(hasher: &mut Sha256, value: &str) {
+    let len = value.len() as u64;
+    hasher.update(len.to_le_bytes());
+    hasher.update(value.as_bytes());
 }
 
 fn session_from_thread_index<'a>(
@@ -235,4 +246,34 @@ fn ensure_session_active(session: &SessionRecord) -> Result<(), WebError> {
         return Ok(());
     }
     Err(WebError::SessionClosing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_session_id;
+
+    #[test]
+    fn session_id_derivation_is_deterministic() {
+        let a = derive_session_id("tenant_a", "artifact_a", "thread_a");
+        let b = derive_session_id("tenant_a", "artifact_a", "thread_a");
+        assert_eq!(a, b);
+        assert!(a.starts_with("sess_"));
+    }
+
+    #[test]
+    fn session_id_derivation_changes_when_inputs_change() {
+        let base = derive_session_id("tenant_a", "artifact_a", "thread_a");
+        assert_ne!(
+            base,
+            derive_session_id("tenant_b", "artifact_a", "thread_a")
+        );
+        assert_ne!(
+            base,
+            derive_session_id("tenant_a", "artifact_b", "thread_a")
+        );
+        assert_ne!(
+            base,
+            derive_session_id("tenant_a", "artifact_a", "thread_b")
+        );
+    }
 }
