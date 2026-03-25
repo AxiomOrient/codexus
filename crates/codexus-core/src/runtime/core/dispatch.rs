@@ -448,9 +448,7 @@ fn normalize_server_request_result(
         ),
         ServerRequestPlanKind::McpServerElicitationRequest => Ok(
             crate::protocol::codecs::ServerRequestResponse::McpServerElicitationRequest(
-                plan_payload_by_contract::<
-                    crate::protocol::generated::McpServerElicitationRequestResponse,
-                >(result, &descriptor.payload_contract)?,
+                plan_payload_by_contract(result, &descriptor.payload_contract)?,
             ),
         ),
         ServerRequestPlanKind::PermissionsRequestApproval => Ok(

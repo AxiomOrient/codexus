@@ -61,7 +61,7 @@ pub fn known_server_request_methods() -> &'static [MethodMeta] {
 }
 
 /// Pure classifier for known server-request methods.
-/// Allocation: none. Complexity: O(1).
+/// Allocation: none. Complexity: O(1) — generated as a match expression.
 pub fn is_known_server_request_method(method: &str) -> bool {
     is_known_server_request(method)
 }

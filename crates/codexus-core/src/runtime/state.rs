@@ -355,15 +355,15 @@ impl JsonFileStateStore {
 fn canonicalize_json_value(value: Value) -> Value {
     match value {
         Value::Object(map) => {
-            let mut keys: Vec<String> = map.keys().cloned().collect();
-            keys.sort_unstable();
-            let mut out = serde_json::Map::with_capacity(keys.len());
-            for key in keys {
-                if let Some(inner) = map.get(&key) {
-                    out.insert(key, canonicalize_json_value(inner.clone()));
-                }
-            }
-            Value::Object(out)
+            // Consume the map into a sorted vec, then recurse — no extra clones.
+            let mut pairs: Vec<(String, Value)> = map.into_iter().collect();
+            pairs.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+            Value::Object(
+                pairs
+                    .into_iter()
+                    .map(|(k, v)| (k, canonicalize_json_value(v)))
+                    .collect(),
+            )
         }
         Value::Array(items) => {
             Value::Array(items.into_iter().map(canonicalize_json_value).collect())
@@ -635,18 +635,26 @@ fn item_from_envelope<'a>(
 /// Upsert a thread entry and advance its `last_seq`.
 /// Each `*_mut` function is responsible only for its own level; callers chain them.
 /// State Transparency: only this function writes `thread.last_seq`.
+///
+/// Hot-path optimisation: avoids allocating the entry key String on the common "already exists"
+/// path by using `contains_key` (borrows `&str` via `Borrow<str>`) before calling `insert`.
+/// `HashMap::entry(key)` requires an owned `K` before the lookup, so it would always allocate;
+/// the explicit two-step avoids that allocation for existing threads.
 fn thread_mut<'a>(state: &'a mut RuntimeState, thread_id: &str, seq: u64) -> &'a mut ThreadState {
-    let thread = state
-        .threads
-        .entry(thread_id.to_owned())
-        .or_insert_with(|| ThreadState {
-            id: thread_id.to_owned(),
-            active_turn: None,
-            turns: HashMap::new(),
-            last_diff: None,
-            plan: None,
-            last_seq: seq,
-        });
+    if !state.threads.contains_key(thread_id) {
+        state.threads.insert(
+            thread_id.to_owned(),
+            ThreadState {
+                id: thread_id.to_owned(),
+                active_turn: None,
+                turns: HashMap::new(),
+                last_diff: None,
+                plan: None,
+                last_seq: seq,
+            },
+        );
+    }
+    let thread = state.threads.get_mut(thread_id).expect("just inserted");
     if seq > thread.last_seq {
         thread.last_seq = seq;
     }
@@ -657,16 +665,19 @@ fn thread_mut<'a>(state: &'a mut RuntimeState, thread_id: &str, seq: u64) -> &'a
 /// State Transparency: only this function writes `turn.last_seq`; does NOT touch thread.last_seq.
 /// Callers must call `thread_mut` first to update the thread level.
 fn turn_mut<'a>(thread: &'a mut ThreadState, turn_id: &str, seq: u64) -> &'a mut TurnState {
-    let turn = thread
-        .turns
-        .entry(turn_id.to_owned())
-        .or_insert_with(|| TurnState {
-            id: turn_id.to_owned(),
-            status: TurnStatus::InProgress,
-            items: HashMap::new(),
-            error: None,
-            last_seq: seq,
-        });
+    if !thread.turns.contains_key(turn_id) {
+        thread.turns.insert(
+            turn_id.to_owned(),
+            TurnState {
+                id: turn_id.to_owned(),
+                status: TurnStatus::InProgress,
+                items: HashMap::new(),
+                error: None,
+                last_seq: seq,
+            },
+        );
+    }
+    let turn = thread.turns.get_mut(turn_id).expect("just inserted");
     if seq > turn.last_seq {
         turn.last_seq = seq;
     }
@@ -677,22 +688,25 @@ fn turn_mut<'a>(thread: &'a mut ThreadState, turn_id: &str, seq: u64) -> &'a mut
 /// State Transparency: only this function writes `item.last_seq`; does NOT touch turn.last_seq.
 /// Callers must call `turn_mut` first to update the turn level.
 fn item_mut<'a>(turn: &'a mut TurnState, item_id: &str, seq: u64) -> &'a mut ItemState {
-    let item = turn
-        .items
-        .entry(item_id.to_owned())
-        .or_insert_with(|| ItemState {
-            id: item_id.to_owned(),
-            item_type: "unknown".to_owned(),
-            started: None,
-            completed: None,
-            text_accum: String::new(),
-            stdout_accum: String::new(),
-            stderr_accum: String::new(),
-            text_truncated: false,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            last_seq: seq,
-        });
+    if !turn.items.contains_key(item_id) {
+        turn.items.insert(
+            item_id.to_owned(),
+            ItemState {
+                id: item_id.to_owned(),
+                item_type: "unknown".to_owned(),
+                started: None,
+                completed: None,
+                text_accum: String::new(),
+                stdout_accum: String::new(),
+                stderr_accum: String::new(),
+                text_truncated: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                last_seq: seq,
+            },
+        );
+    }
+    let item = turn.items.get_mut(item_id).expect("just inserted");
     if seq > item.last_seq {
         item.last_seq = seq;
     }

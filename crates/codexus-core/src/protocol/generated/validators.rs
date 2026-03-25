@@ -1,7 +1,5 @@
 use serde_json::Value;
 
-use crate::protocol::generated::inventory::SERVER_REQUESTS;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientRequestParamsContract {
     Object,
@@ -367,7 +365,16 @@ pub const CLIENT_REQUEST_VALIDATORS: &[ClientRequestValidator] = &[
 ];
 
 pub fn is_known_server_request(method: &str) -> bool {
-    SERVER_REQUESTS.iter().any(|meta| meta.wire_name == method)
+    matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/tool/requestUserInput"
+            | "mcpServer/elicitation/request"
+            | "item/permissions/requestApproval"
+            | "item/tool/call"
+            | "account/chatgptAuthTokens/refresh"
+    )
 }
 
 pub fn client_request_validator(method: &str) -> Option<&'static ClientRequestValidator> {

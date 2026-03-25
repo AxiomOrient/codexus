@@ -279,7 +279,10 @@ fn plan_generated_outputs(tables: &NormalizedProtocolTables) -> OutputPlan {
             },
             PlannedFile {
                 relative_path: "crates/codexus-core/src/protocol/generated/validators.rs",
-                contents: render_validators_module(&tables.client_requests),
+                contents: render_validators_module(
+                    &tables.client_requests,
+                    &tables.server_requests,
+                ),
             },
             PlannedFile {
                 relative_path: "crates/codexus-core/src/protocol/generated/codecs.rs",
@@ -933,10 +936,9 @@ fn render_inventory_module(source_hash: &str) -> String {
     out
 }
 
-fn render_validators_module(client_requests: &[Entry]) -> String {
+fn render_validators_module(client_requests: &[Entry], server_requests: &[Entry]) -> String {
     let mut out = String::new();
     out.push_str("use serde_json::Value;\n\n");
-    out.push_str("use crate::protocol::generated::inventory::SERVER_REQUESTS;\n\n");
     out.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
     out.push_str("pub enum ClientRequestParamsContract {\n");
     out.push_str("    Object,\n");
@@ -973,7 +975,15 @@ fn render_validators_module(client_requests: &[Entry]) -> String {
     }
     out.push_str("];\n\n");
     out.push_str("pub fn is_known_server_request(method: &str) -> bool {\n");
-    out.push_str("    SERVER_REQUESTS.iter().any(|meta| meta.wire_name == method)\n");
+    out.push_str("    matches!(\n");
+    out.push_str("        method,\n");
+    let arms: Vec<String> = server_requests
+        .iter()
+        .map(|entry| format!("        {:?}", entry.wire_name))
+        .collect();
+    out.push_str(&arms.join("\n        | "));
+    out.push('\n');
+    out.push_str("    )\n");
     out.push_str("}\n\n");
     out.push_str(
         "pub fn client_request_validator(method: &str) -> Option<&'static ClientRequestValidator> {\n",

@@ -14,12 +14,14 @@ pub(super) fn state_snapshot_arc(inner: &Arc<RuntimeInner>) -> Arc<RuntimeState>
     }
 }
 
-/// Apply a mutation atomically: read current state, apply closure, write new state — all under
-/// the write lock. Returns the resulting state for callers that need to persist it.
+/// Apply a mutation atomically: acquire the write lock, mutate in-place via `Arc::make_mut`,
+/// and return a cheap Arc clone of the updated state.
 ///
-/// Previously the pattern was read(lock) → clone → mutate → write(lock), which allowed a
-/// concurrent writer to overwrite the first writer's changes (lost update). Holding the write
-/// lock across the entire read-modify-write eliminates that race.
+/// `Arc::make_mut` avoids cloning the full `RuntimeState` when no snapshot holders exist
+/// (Arc strong count == 1), which is the common case during streaming. It falls back to a
+/// clone only when an external caller is actively holding a snapshot Arc.
+///
+/// Holding the write lock across the entire read-modify-write prevents lost-update races.
 fn apply_state_mutation<F: FnOnce(&mut RuntimeState)>(
     inner: &Arc<RuntimeInner>,
     update: F,
@@ -29,35 +31,38 @@ fn apply_state_mutation<F: FnOnce(&mut RuntimeState)>(
         .state
         .write()
         .unwrap_or_else(|p| p.into_inner());
-    let mut next = guard.as_ref().clone();
-    update(&mut next);
-    let next = Arc::new(next);
-    *guard = Arc::clone(&next);
-    next
+    update(Arc::make_mut(&mut *guard));
+    Arc::clone(&*guard)
 }
 
-fn persist_state(inner: &Arc<RuntimeInner>, next: &RuntimeState) {
-    let _ = inner
-        .spec
-        .state_store
-        .save_snapshot(&RuntimeStateSnapshot::from_runtime_state(next));
+/// Offload snapshot persistence to the blocking thread pool so the async dispatch loop is
+/// never stalled by file I/O. Fire-and-forget: the latest persisted state on disk may lag
+/// by one scheduling quantum, which is acceptable for crash-recovery semantics.
+fn persist_state(inner: &Arc<RuntimeInner>, next: Arc<RuntimeState>) {
+    let store = Arc::clone(&inner.spec.state_store);
+    tokio::task::spawn_blocking(move || {
+        let _ = store.save_snapshot(&RuntimeStateSnapshot::from_runtime_state(&next));
+    });
 }
 
 pub(super) fn state_set_connection(inner: &Arc<RuntimeInner>, connection: ConnectionState) {
     let next = apply_state_mutation(inner, |state| {
         state.connection = connection;
     });
-    persist_state(inner, &next);
+    persist_state(inner, next);
 }
 
+/// Hot path: called on every inbound envelope. Uses `Arc::make_mut` directly to avoid the
+/// unnecessary `Arc::clone` return value that `apply_state_mutation` would produce.
+/// No persistence — see comment in the previous implementation for rationale.
 pub(super) fn state_apply_envelope(inner: &Arc<RuntimeInner>, envelope: &Envelope) {
     let limits = &inner.spec.state_projection_limits;
-    apply_state_mutation(inner, |state| {
-        reduce_in_place_with_limits(state, envelope, limits);
-    });
-    // No persist — envelope projection fires on every inbound message and is too frequent for
-    // per-call disk I/O. Meaningful state (connection, pending requests) is persisted on those
-    // transitions. The in-memory projection is the source of truth for readers.
+    let mut guard = inner
+        .snapshots
+        .state
+        .write()
+        .unwrap_or_else(|p| p.into_inner());
+    reduce_in_place_with_limits(Arc::make_mut(&mut *guard), envelope, limits);
 }
 
 pub(super) fn state_insert_pending_server_request(
@@ -70,21 +75,21 @@ pub(super) fn state_insert_pending_server_request(
             .pending_server_requests
             .insert(rpc_id.to_owned(), request);
     });
-    persist_state(inner, &next);
+    persist_state(inner, next);
 }
 
 pub(super) fn state_remove_pending_server_request(inner: &Arc<RuntimeInner>, rpc_id: &str) {
     let next = apply_state_mutation(inner, |state| {
         state.pending_server_requests.remove(rpc_id);
     });
-    persist_state(inner, &next);
+    persist_state(inner, next);
 }
 
 pub(super) fn state_clear_pending_server_requests(inner: &Arc<RuntimeInner>) {
     let next = apply_state_mutation(inner, |state| {
         state.pending_server_requests.clear();
     });
-    persist_state(inner, &next);
+    persist_state(inner, next);
 }
 
 #[cfg(test)]
