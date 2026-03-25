@@ -24,7 +24,7 @@ It is designed to provide:
 
 ## Package Overview
 
-The published crate is `codexus` (`1.0.0`).
+The published crate is `codexus` (`1.1.0`).
 
 Public layers:
 - `codexus::protocol`: generated method specs, inventory, validators, codecs
@@ -77,7 +77,7 @@ Add the crate:
 
 ```toml
 [dependencies]
-codexus = "1.0.0"
+codexus = "1.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
