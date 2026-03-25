@@ -1,10 +1,17 @@
 # 02. PRODUCT SPEC — Generated Typed Protocol Core for codexus
 
+## Document status
+
+- Status: release contract
+- Audience: maintainers and release reviewers
+- Primary companion doc: `README.md`
+- Repository doc limit: `README.md` and this file only
+
 ## 1. Objective
 
 Build `codexus` around a **generated typed protocol core, thin runtime, and thin human layer** while preserving exact Codex AppServer JSON-RPC interoperability.
 
-This document is the release contract. `README.md` explains usage; this spec defines what must be true for release.
+This document is the release contract. `README.md` explains adoption and usage; this spec defines what must be true for release, packaging, and documentation parity.
 
 ### Required properties
 1. Every upstream method has a first-class representation.
@@ -31,7 +38,7 @@ No hand-maintained parallel method list is allowed.
 
 ## 3. Product requirements
 
-## 3.1 Generated parity surface
+### 3.1 Generated parity surface
 
 The build must generate:
 
@@ -76,7 +83,7 @@ Machine-readable inventory used by tests and CI:
 
 ---
 
-## 3.2 Public API shape
+### 3.2 Public API shape
 
 The public API must have four layers.
 
@@ -123,7 +130,7 @@ Critical rule:
 
 ---
 
-## 3.3 Runtime state projection
+### 3.3 Runtime state projection
 
 Layer 3 must maintain one bounded, serializable runtime state projection derived only from live
 protocol envelopes plus generated inventory metadata.
@@ -218,7 +225,7 @@ Generated inventory used for parity tests.
 
 ## 6. Required method coverage
 
-## 6.1 Stable client requests
+### 6.1 Stable client requests
 The product must provide first-class wrappers for all of the following.
 
 ### Session / thread / turn
@@ -282,7 +289,7 @@ The product must provide first-class wrappers for all of the following.
 - `configRequirements/read`
 - `account/read`
 
-## 6.2 Experimental client requests
+### 6.2 Experimental client requests
 Generate and gate:
 - `thread/increment_elicitation`
 - `thread/decrement_elicitation`
@@ -297,7 +304,7 @@ Generate and gate:
 - `fuzzyFileSearch/sessionUpdate`
 - `fuzzyFileSearch/sessionStop`
 
-## 6.3 Deprecated compatibility methods
+### 6.3 Deprecated compatibility methods
 Generate in compatibility namespace:
 - `getConversationSummary`
 - `gitDiffToRemote`
@@ -338,7 +345,7 @@ Default must be `QueueForCaller` or explicit error.
 
 ## 8. Required notification coverage
 
-## 8.1 Stable notifications
+### 8.1 Stable notifications
 Generate typed decoding for:
 
 - `error`
@@ -382,7 +389,7 @@ Generate typed decoding for:
 - `deprecationNotice`
 - `configWarning`
 
-## 8.2 Experimental / platform notifications
+### 8.2 Experimental / platform notifications
 Generate behind feature flags:
 - realtime notification family
 - Windows-specific warning/setup completion
@@ -393,7 +400,7 @@ Generate behind feature flags:
 
 ## 9. Code generation design
 
-## 9.1 Internal schema
+### 9.1 Internal schema
 
 ```rust
 struct ProtocolInventory {
@@ -415,7 +422,7 @@ struct ClientRequestSpec {
 }
 ```
 
-## 9.2 Generator pipeline
+### 9.2 Generator pipeline
 
 ```rust
 fn main() {
@@ -441,7 +448,7 @@ Preferred:
 
 ## 10. Runtime API requirements
 
-## 10.1 Generic typed call path
+### 10.1 Generic typed call path
 
 ```rust
 async fn request_typed<M: MethodSpec>(
@@ -456,7 +463,7 @@ async fn request_typed<M: MethodSpec>(
 }
 ```
 
-## 10.2 Generated first-class façade methods
+### 10.2 Generated first-class facade methods
 
 ```rust
 impl AppServer {
@@ -471,7 +478,7 @@ impl AppServer {
 }
 ```
 
-## 10.3 Thread handle wrappers
+### 10.3 Thread handle wrappers
 
 `ThreadHandle` may still offer ergonomic methods, but they must delegate to exact generated protocol calls.
 
@@ -493,7 +500,7 @@ impl ThreadHandle {
 }
 ```
 
-## 10.4 Turn failure classification
+### 10.4 Turn failure classification
 
 Every terminal prompt-turn failure is classified into one of three variants before it surfaces to the caller.
 
@@ -685,7 +692,7 @@ trait ValidateMethod {
 
 ## 14. Testing requirements
 
-## 14.1 Parity tests
+### 14.1 Parity tests
 Generated parity tests must fail if upstream protocol changes.
 
 ```rust
@@ -699,29 +706,29 @@ fn generated_inventory_matches_upstream_inventory() {
 }
 ```
 
-## 14.2 Method smoke tests
+### 14.2 Method smoke tests
 One smoke test per generated client request:
 - serialize params
 - invoke mock server
 - deserialize result
 
-## 14.3 Router exhaustiveness tests
+### 14.3 Router exhaustiveness tests
 - every server request method decodes
 - every notification method decodes
 - unknown method policy behavior is explicit
 
-## 14.4 Golden tests
+### 14.4 Golden tests
 - generated method constants
 - generated enum variant names
 - deprecation markers
 - feature flags
 
-## 14.5 Integration tests
-Run against a real `codex app-server` version matrix:
-- minimum supported version
-- current stable upstream
-- optional next/nightly if available
+### 14.5 Integration tests
 
+In approved environments, release review should exercise:
+- minimum supported app-server version
+- current stable upstream snapshot
+- optional next or nightly snapshot when available
 ---
 
 ## 15. CI requirements
@@ -740,6 +747,15 @@ CI must fail if:
 - any stable method lacks first-class wrapper
 - any stable server request lacks router entry
 - any stable notification lacks typed decode entry
+- `README.md` and this spec disagree on public release gates or documentation scope
+
+### Release artifact expectations
+
+A release candidate must ship with:
+- generated protocol output checked in under `crates/codexus-core/src/protocol/generated/`
+- upstream protocol inputs preserved under `crates/codexus-core/protocol-inputs/`
+- a `README.md` that matches the published crate behavior and examples
+- this spec updated when release policy, required coverage, or documentation scope changes
 
 ---
 
@@ -800,6 +816,11 @@ The work is done only when all statements below are true.
 
 8. Human-facing repository docs stay limited to `README.md` and `docs/specs/product-spec.md`.
 
+9. `README.md` and this spec agree on:
+   - release gates
+   - repository doc scope
+   - the generated-core-first architecture
+
 ---
 
 ## 18. Non-goals
@@ -837,3 +858,4 @@ Release is acceptable only when all of the following are true:
 - `cargo test --workspace` passes
 - ignored real-server tests are green in an approved environment
 - no secondary human-facing docs drift away from `README.md` and this spec
+- `README.md` examples and terminology match the published `codexus` crate surface

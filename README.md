@@ -2,7 +2,7 @@
 
 `codexus` is a Rust SDK for the local `codex app-server`.
 
-It is built around one rule:
+It is built around one release rule:
 
 ```text
 Generated Protocol Core
@@ -10,11 +10,30 @@ Generated Protocol Core
 -> Thin Human API
 ```
 
-The generated protocol layer is the only protocol truth. Everything else stays smaller and builds on top of it.
+The generated protocol layer is the only protocol truth. Ergonomic helpers, workflows, and adapters are intentionally thinner layers on top of that generated surface.
 
-## What It Can Do
+## Why This Exists
 
-`codexus` supports three levels of use:
+`codexus` is for Rust applications that need local Codex runtime access without giving up typed protocol coverage or release discipline.
+
+It is designed to provide:
+- protocol-complete typed access to the upstream app-server contract
+- ergonomic prompt and session APIs for common flows
+- explicit approval, hook, and event-stream control for advanced flows
+- checked-in generated protocol output with CI drift detection
+
+## Package Overview
+
+The published crate is `codexus` (`1.0.0`).
+
+Public layers:
+- `codexus::protocol`: generated method specs, inventory, validators, codecs
+- `codexus::runtime`: typed runtime, sessions, hooks, approvals, state, transport
+- `codexus::automation`: recurring turns on one prepared `Session`
+- `codexus::plugin`: hook traits and hook-side contracts
+- `codexus::web`, `codexus::artifact`: higher-level adapters/domains
+
+Entry points by use case:
 
 | Level | Entry point | Use when |
 |-------|-------------|----------|
@@ -25,23 +44,24 @@ The generated protocol layer is the only protocol truth. Everything else stays s
 Core capabilities:
 - run one prompt or many turns in one session
 - stream assistant output and turn lifecycle events
-- start, resume, read, list, archive, and interrupt threads/turns
+- start, resume, read, list, archive, and interrupt threads and turns
 - route typed server requests and approval flows
 - attach files and skills to runs
 - intercept lifecycle phases with hooks
-- run simple fixed-cadence automation on one prepared session
+- run fixed-cadence automation on one prepared session
 - persist bounded runtime state snapshots
 
-## Design
+## Requirements
 
-Public layers:
-- `codexus::protocol`: generated method specs, inventory, validators, codecs
-- `codexus::runtime`: typed runtime, sessions, hooks, approvals, state, transport
-- `codexus::automation`: recurring turns on one prepared `Session`
-- `codexus::plugin`: hook traits and hook-side contracts
-- `codexus::web`, `codexus::artifact`: higher-level adapters/domains
+`codexus` talks to a local Codex CLI runtime by spawning `codex app-server`.
 
-Defaults:
+Before integrating it:
+- install a compatible `codex` CLI on the host machine
+- ensure the runtime can launch `codex app-server` from the process environment
+- use Tokio, because the crate is async-first
+- provide an absolute working directory for prompt and session flows
+
+Default runtime behavior:
 
 | Setting | Default |
 |---------|---------|
@@ -52,6 +72,14 @@ Defaults:
 | privileged escalation | `false` |
 
 ## Quick Start
+
+Add the crate:
+
+```toml
+[dependencies]
+codexus = "1.0.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
 
 One prompt:
 
@@ -91,8 +119,8 @@ Typed protocol bridge:
 
 ```rust
 use codexus::protocol::client_requests::ThreadStart;
-use codexus::AppServer;
 use codexus::runtime::ClientConfig;
+use codexus::AppServer;
 use serde_json::json;
 
 #[tokio::main]
@@ -111,7 +139,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Release Gates
+## Release Model
+
+The repository is release-ready only when all of the following remain true:
+- generated protocol output matches the vendored upstream snapshot
+- the runtime remains a thin layer over the generated protocol surface
+- README examples and product spec claims still match the public crate behavior
+- CI continues to block drift in code generation, formatting, linting, and tests
 
 Minimum release verification:
 
@@ -129,13 +163,13 @@ CODEX_RUNTIME_REAL_SERVER_APPROVED=1 \
 cargo test -p codexus ergonomic::tests::real_server:: -- --ignored --nocapture
 ```
 
-## Documentation
+## Documentation Contract
 
 Human-facing docs are intentionally limited to:
 - this `README.md`
 - [`docs/specs/product-spec.md`](docs/specs/product-spec.md)
 
-The product spec is the detailed contract for generated protocol completeness, runtime shape, and release requirements.
+`README.md` is the operator-facing entry point. The product spec is the release contract for generated protocol completeness, runtime shape, and release gates. If the two drift, the release is not ready.
 
 ## License
 

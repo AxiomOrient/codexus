@@ -5,6 +5,8 @@ use crate::plugin::{
     BlockReason, HookAction, HookContext, HookIssue, HookPhase, HookReport, PostHook, PreHook,
 };
 
+type PreHookList = Arc<[Arc<dyn PreHook>]>;
+
 #[derive(Clone, Default)]
 pub struct RuntimeHookConfig {
     pub pre_hooks: Vec<Arc<dyn PreHook>>,
@@ -101,10 +103,10 @@ pub(crate) fn merge_hook_configs(
 }
 
 pub(crate) struct HookKernel {
-    pre_hooks: RwLock<Vec<Arc<dyn PreHook>>>,
-    post_hooks: RwLock<Vec<Arc<dyn PostHook>>>,
-    pre_tool_use_hooks: RwLock<Vec<Arc<dyn PreHook>>>,
-    thread_scoped_pre_tool_use_hooks: RwLock<HashMap<String, Vec<Arc<dyn PreHook>>>>,
+    pre_hooks: RwLock<PreHookList>,
+    post_hooks: RwLock<Arc<[Arc<dyn PostHook>]>>,
+    pre_tool_use_hooks: RwLock<PreHookList>,
+    thread_scoped_pre_tool_use_hooks: RwLock<HashMap<String, PreHookList>>,
     latest_report: RwLock<HookReport>,
 }
 
@@ -117,9 +119,9 @@ pub(crate) struct PreHookDecision {
 impl HookKernel {
     pub(crate) fn new(config: RuntimeHookConfig) -> Self {
         Self {
-            pre_hooks: RwLock::new(config.pre_hooks),
-            post_hooks: RwLock::new(config.post_hooks),
-            pre_tool_use_hooks: RwLock::new(config.pre_tool_use_hooks),
+            pre_hooks: RwLock::new(Arc::from(config.pre_hooks)),
+            post_hooks: RwLock::new(Arc::from(config.post_hooks)),
+            pre_tool_use_hooks: RwLock::new(Arc::from(config.pre_tool_use_hooks)),
             thread_scoped_pre_tool_use_hooks: RwLock::new(HashMap::new()),
             latest_report: RwLock::new(HookReport::default()),
         }
@@ -156,13 +158,18 @@ impl HookKernel {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let entry = guard.entry(thread_id.to_owned()).or_default();
-        let mut names: HashSet<&'static str> = entry.iter().map(|hook| hook.hook_name()).collect();
+        let existing = guard
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_else(empty_arc_slice);
+        let mut merged = existing.iter().cloned().collect::<Vec<_>>();
+        let mut names: HashSet<&'static str> = merged.iter().map(|hook| hook.hook_name()).collect();
         for hook in hooks {
             if names.insert(hook.hook_name()) {
-                entry.push(Arc::clone(hook));
+                merged.push(Arc::clone(hook));
             }
         }
+        guard.insert(thread_id.to_owned(), Arc::from(merged));
     }
 
     pub(crate) fn clear_thread_scoped_pre_tool_use_hooks(&self, thread_id: &str) {
@@ -209,10 +216,24 @@ impl HookKernel {
         report: &mut HookReport,
         scoped: Option<&RuntimeHookConfig>,
     ) -> Result<Vec<PreHookDecision>, BlockReason> {
-        let hooks = merge_owned_with_overlay(
-            read_rwlock_vec(&self.pre_hooks),
-            scoped.map(|cfg| cfg.pre_hooks.as_slice()),
-        );
+        let base = read_rwlock_arc(&self.pre_hooks);
+        let overlay = scoped.map(|cfg| cfg.pre_hooks.as_slice()).unwrap_or(&[]);
+        let mut decisions = Vec::with_capacity(base.len().max(overlay.len()));
+        if overlay.is_empty() {
+            for hook in base.iter() {
+                match hook.call(ctx).await {
+                    Ok(HookAction::Block(reason)) => return Err(reason),
+                    Ok(action) => decisions.push(PreHookDecision {
+                        hook_name: hook.name().to_owned(),
+                        action,
+                    }),
+                    Err(issue) => report.push(normalize_issue(issue, hook.name(), ctx.phase)),
+                }
+            }
+            return Ok(decisions);
+        }
+
+        let hooks = merge_arc_slice_with_overlay(base.as_ref(), overlay);
         let mut decisions = Vec::with_capacity(hooks.len());
         for hook in hooks {
             match hook.call(ctx).await {
@@ -236,11 +257,23 @@ impl HookKernel {
         ctx: &HookContext,
         report: &mut HookReport,
     ) -> Result<(), BlockReason> {
-        let mut hooks = read_rwlock_vec(&self.pre_tool_use_hooks);
-        if let Some(thread_id) = ctx.thread_id.as_deref() {
-            let scoped = self.thread_scoped_pre_tool_use_hooks_for(thread_id);
-            hooks = merge_owned_with_overlay(hooks, scoped.as_deref());
+        let base = read_rwlock_arc(&self.pre_tool_use_hooks);
+        let scoped = ctx
+            .thread_id
+            .as_deref()
+            .and_then(|thread_id| self.thread_scoped_pre_tool_use_hooks_for(thread_id));
+        if scoped.as_ref().is_none_or(|hooks| hooks.is_empty()) {
+            for hook in base.iter() {
+                match hook.call(ctx).await {
+                    Ok(HookAction::Block(reason)) => return Err(reason),
+                    Ok(_) => {}
+                    Err(issue) => report.push(normalize_issue(issue, hook.name(), ctx.phase)),
+                }
+            }
+            return Ok(());
         }
+
+        let hooks = merge_arc_slice_with_overlay(base.as_ref(), scoped.as_deref().unwrap_or(&[]));
         for hook in hooks {
             match hook.call(ctx).await {
                 Ok(HookAction::Block(reason)) => return Err(reason),
@@ -254,7 +287,7 @@ impl HookKernel {
     fn thread_scoped_pre_tool_use_hooks_for(
         &self,
         thread_id: &str,
-    ) -> Option<Vec<Arc<dyn PreHook>>> {
+    ) -> Option<Arc<[Arc<dyn PreHook>]>> {
         let guard = match self.thread_scoped_pre_tool_use_hooks.read() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -270,10 +303,18 @@ impl HookKernel {
         report: &mut HookReport,
         scoped: Option<&RuntimeHookConfig>,
     ) {
-        let hooks = merge_owned_with_overlay(
-            read_rwlock_vec(&self.post_hooks),
-            scoped.map(|cfg| cfg.post_hooks.as_slice()),
-        );
+        let base = read_rwlock_arc(&self.post_hooks);
+        let overlay = scoped.map(|cfg| cfg.post_hooks.as_slice()).unwrap_or(&[]);
+        if overlay.is_empty() {
+            for hook in base.iter() {
+                if let Err(issue) = hook.call(ctx).await {
+                    report.push(normalize_issue(issue, hook.name(), ctx.phase));
+                }
+            }
+            return;
+        }
+
+        let hooks = merge_arc_slice_with_overlay(base.as_ref(), overlay);
         for hook in hooks {
             if let Err(issue) = hook.call(ctx).await {
                 report.push(normalize_issue(issue, hook.name(), ctx.phase));
@@ -315,20 +356,24 @@ impl HookName for dyn PostHook {
 
 /// Read the length of a poisoning-safe RwLock hook vec without cloning.
 /// Allocation: none. Complexity: O(1).
-fn rwlock_len<T: ?Sized>(target: &RwLock<Vec<Arc<T>>>) -> usize {
+fn rwlock_len<T: ?Sized>(target: &RwLock<Arc<[Arc<T>]>>) -> usize {
     match target.read() {
         Ok(guard) => guard.len(),
         Err(poisoned) => poisoned.into_inner().len(),
     }
 }
 
-/// Read a poisoning-safe RwLock clone of the hook vec.
-/// Allocation: clones Vec + its Arc entries. Complexity: O(n), n=hook count.
-fn read_rwlock_vec<T: ?Sized>(target: &RwLock<Vec<Arc<T>>>) -> Vec<Arc<T>> {
+/// Read a poisoning-safe RwLock snapshot of the hook slice.
+/// Allocation: clones only the outer Arc. Complexity: O(1).
+fn read_rwlock_arc<T: ?Sized>(target: &RwLock<Arc<[Arc<T>]>>) -> Arc<[Arc<T>]> {
     match target.read() {
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     }
+}
+
+fn empty_arc_slice<T: ?Sized>() -> Arc<[Arc<T>]> {
+    Arc::from(Vec::<Arc<T>>::new())
 }
 
 fn merge_preferred_hooks<T>(preferred: &[Arc<T>], fallback: &[Arc<T>]) -> Vec<Arc<T>>
@@ -350,39 +395,42 @@ where
     merged
 }
 
-fn merge_owned_with_overlay<T>(mut base: Vec<Arc<T>>, overlay: Option<&[Arc<T>]>) -> Vec<Arc<T>>
+fn merge_arc_slice_with_overlay<T>(base: &[Arc<T>], overlay: &[Arc<T>]) -> Vec<Arc<T>>
 where
     T: ?Sized + HookName,
 {
-    let Some(overlay) = overlay else {
-        return base;
-    };
     if overlay.is_empty() {
-        return base;
+        return base.to_vec();
     }
-    let mut names: HashSet<&'static str> = base.iter().map(|hook| hook.hook_name()).collect();
+    let mut merged = base.to_vec();
+    let mut names: HashSet<&'static str> = merged.iter().map(|hook| hook.hook_name()).collect();
     for hook in overlay {
         if names.insert(hook.hook_name()) {
-            base.push(Arc::clone(hook));
+            merged.push(Arc::clone(hook));
         }
     }
-    base
+    merged
 }
 
 /// Register incoming hooks deduplicating by name. Poison-safe.
 /// Allocation: one HashSet per call. Complexity: O(n + m), n=existing, m=incoming.
-fn register_dedup_hooks<T>(target: &RwLock<Vec<Arc<T>>>, incoming: Vec<Arc<T>>)
+fn register_dedup_hooks<T>(target: &RwLock<Arc<[Arc<T>]>>, incoming: Vec<Arc<T>>)
 where
     T: ?Sized + HookName,
 {
+    if incoming.is_empty() {
+        return;
+    }
     let mut guard = match target.write() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let mut names: HashSet<&'static str> = guard.iter().map(|hook| hook.hook_name()).collect();
+    let mut merged = guard.iter().cloned().collect::<Vec<_>>();
+    let mut names: HashSet<&'static str> = merged.iter().map(|hook| hook.hook_name()).collect();
     for hook in incoming {
         if names.insert(hook.hook_name()) {
-            guard.push(hook);
+            merged.push(hook);
         }
     }
+    *guard = Arc::from(merged);
 }
