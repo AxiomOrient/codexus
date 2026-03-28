@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::protocol::methods;
 use crate::runtime::api::CommandExecOutputDeltaNotification;
+use crate::runtime::api::FsChangedNotification;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
@@ -46,6 +47,7 @@ pub struct Envelope {
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeNotification {
     SkillsChanged(SkillsChangedNotification),
+    FsChanged(FsChangedNotification),
     CommandExecOutputDelta(CommandExecOutputDeltaNotification),
     AgentMessageDelta(AgentMessageDeltaNotification),
     TurnCompleted(TurnCompletedNotification),
@@ -114,6 +116,12 @@ pub fn decode_notification(envelope: &Envelope) -> Option<RuntimeNotification> {
         methods::SKILLS_CHANGED => Some(RuntimeNotification::SkillsChanged(
             SkillsChangedNotification {},
         )),
+        methods::FS_CHANGED => {
+            let params = envelope.json.get("params")?.clone();
+            serde_json::from_value::<FsChangedNotification>(params)
+                .ok()
+                .map(RuntimeNotification::FsChanged)
+        }
         methods::COMMAND_EXEC_OUTPUT_DELTA => {
             let params = envelope.json.get("params")?.clone();
             serde_json::from_value::<CommandExecOutputDeltaNotification>(params)
@@ -193,6 +201,15 @@ pub fn extract_skills_changed_notification(
 ) -> Option<SkillsChangedNotification> {
     match decode_notification(envelope) {
         Some(RuntimeNotification::SkillsChanged(notification)) => Some(notification),
+        _ => None,
+    }
+}
+
+/// Detect one `fs/changed` filesystem watch notification.
+/// Allocation: one params clone for serde deserialization. Complexity: O(n), n = params size.
+pub fn extract_fs_changed_notification(envelope: &Envelope) -> Option<FsChangedNotification> {
+    match decode_notification(envelope) {
+        Some(RuntimeNotification::FsChanged(notification)) => Some(notification),
         _ => None,
     }
 }
@@ -384,6 +401,42 @@ mod tests {
         assert!(matches!(
             decode_notification(&envelope),
             Some(RuntimeNotification::CommandExecOutputDelta(_))
+        ));
+    }
+
+    #[test]
+    fn detects_fs_changed_notification() {
+        let envelope = Envelope {
+            seq: 1,
+            ts_millis: 0,
+            direction: Direction::Inbound,
+            kind: MsgKind::Notification,
+            rpc_id: None,
+            method: Some(Arc::from("fs/changed")),
+            thread_id: None,
+            turn_id: None,
+            item_id: None,
+            json: Arc::new(json!({
+                "method":"fs/changed",
+                "params":{
+                    "watchId":"watch-1",
+                    "changedPaths":["/tmp/repo/.git/index"]
+                }
+            })),
+        };
+
+        let notification =
+            extract_fs_changed_notification(&envelope).expect("typed fs changed notification");
+        assert_eq!(
+            notification,
+            json!({
+                "watchId": "watch-1",
+                "changedPaths": ["/tmp/repo/.git/index"]
+            })
+        );
+        assert!(matches!(
+            decode_notification(&envelope),
+            Some(RuntimeNotification::FsChanged(_))
         ));
     }
 

@@ -6,8 +6,8 @@ use super::server_notifications;
 use super::server_requests;
 use super::types::*;
 
-pub const SOURCE_REVISION: &str = "openai/codex@527244910fb851cea6147334dbc08f8fbce4cb9d";
-pub const SOURCE_HASH: &str = "80c03c285c77ccd3a9eaeda5cfe764043271b524410dc1b2ad2ac1f85c6e292d";
+pub const SOURCE_REVISION: &str = "openai/codex@e39ddc61b14a8c645124f5d45ab912989a02e5fb";
+pub const SOURCE_HASH: &str = "a2e91282a704d7d6bddd7de436b8d6d16d5ba9b8f3d2cc53a4a3ba9fc849b13c";
 
 pub const CLIENT_REQUESTS: &[MethodMeta] = client_requests::SPECS;
 pub const SERVER_REQUESTS: &[MethodMeta] = server_requests::SPECS;

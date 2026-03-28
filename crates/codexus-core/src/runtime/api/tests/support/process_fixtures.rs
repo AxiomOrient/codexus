@@ -203,12 +203,39 @@ for line in sys.stdin:
         out = {"id": rpc_id, "result": {}}
     elif method == "command/exec/terminate":
         out = {"id": rpc_id, "result": {}}
+    elif method == "fs/watch":
+        out = {
+            "id": rpc_id,
+            "result": {
+                "watchId": "watch-1",
+                "path": params.get("path", "/tmp/repo/.git"),
+            },
+        }
+    elif method == "fs/unwatch":
+        out = {"id": rpc_id, "result": {}}
+    elif method == "experimentalFeature/enablement/set":
+        out = {
+            "id": rpc_id,
+            "result": {
+                "enablement": params.get("enablement", {})
+            },
+        }
     elif method == "turn/start":
         out = {"id": rpc_id, "result": {"turn": {"id": "turn_typed"}, "echoParams": params}}
     elif method == "turn/steer":
         out = {"id": rpc_id, "result": {"turn": {"id": "turn_steered"}, "echoParams": params}}
     elif method == "turn/interrupt":
         out = {"id": rpc_id, "result": {"ok": True, "turnId": params.get("turnId")}}
+    elif method == "probe_fs_changed":
+        sys.stdout.write(json.dumps({
+            "method":"fs/changed",
+            "params":{
+                "watchId":"watch-1",
+                "changedPaths":["/tmp/repo/.git/index"]
+            }
+        }) + "\n")
+        sys.stdout.flush()
+        out = {"id": rpc_id, "result": {"ok": True}}
     elif method == "probe_skills_changed":
         sys.stdout.write(json.dumps({"method":"skills/changed","params":{}}) + "\n")
         sys.stdout.flush()

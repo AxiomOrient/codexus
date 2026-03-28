@@ -173,6 +173,16 @@ pub const CLIENT_REQUEST_VALIDATORS: &[ClientRequestValidator] = &[
         result: ClientRequestResultContract::Object,
     },
     ClientRequestValidator {
+        wire_name: "fs/watch",
+        params: ClientRequestParamsContract::Object,
+        result: ClientRequestResultContract::Object,
+    },
+    ClientRequestValidator {
+        wire_name: "fs/unwatch",
+        params: ClientRequestParamsContract::Object,
+        result: ClientRequestResultContract::Object,
+    },
+    ClientRequestValidator {
         wire_name: "skills/config/write",
         params: ClientRequestParamsContract::Object,
         result: ClientRequestResultContract::Object,
@@ -234,6 +244,11 @@ pub const CLIENT_REQUEST_VALIDATORS: &[ClientRequestValidator] = &[
     },
     ClientRequestValidator {
         wire_name: "experimentalFeature/list",
+        params: ClientRequestParamsContract::Object,
+        result: ClientRequestResultContract::Object,
+    },
+    ClientRequestValidator {
+        wire_name: "experimentalFeature/enablement/set",
         params: ClientRequestParamsContract::Object,
         result: ClientRequestResultContract::Object,
     },

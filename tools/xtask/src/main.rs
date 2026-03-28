@@ -7,9 +7,9 @@ use std::process::Command;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, Attribute, Ident, Item, LitStr, Token};
 
-const COMMON_RS: &str = "crates/codexus-core/protocol-inputs/openai/codex/527244910fb851cea6147334dbc08f8fbce4cb9d/codex-rs/app-server-protocol/src/protocol/common.rs";
-const V2_RS: &str = "crates/codexus-core/protocol-inputs/openai/codex/527244910fb851cea6147334dbc08f8fbce4cb9d/codex-rs/app-server-protocol/src/protocol/v2.rs";
-const SOURCE_REVISION: &str = "openai/codex@527244910fb851cea6147334dbc08f8fbce4cb9d";
+const COMMON_RS: &str = "crates/codexus-core/protocol-inputs/openai/codex/e39ddc61b14a8c645124f5d45ab912989a02e5fb/codex-rs/app-server-protocol/src/protocol/common.rs";
+const V2_RS: &str = "crates/codexus-core/protocol-inputs/openai/codex/e39ddc61b14a8c645124f5d45ab912989a02e5fb/codex-rs/app-server-protocol/src/protocol/v2.rs";
+const SOURCE_REVISION: &str = "openai/codex@e39ddc61b14a8c645124f5d45ab912989a02e5fb";
 
 fn main() -> Result<(), String> {
     let task = std::env::args()

@@ -67,6 +67,7 @@ define_server_notification_specs! {
     AccountUpdated => "account/updated", Stable, Core, "v2::AccountUpdatedNotification", None, AccountUpdatedNotification,
     AccountRateLimitsUpdated => "account/rateLimits/updated", Stable, Core, "v2::AccountRateLimitsUpdatedNotification", None, AccountRateLimitsUpdatedNotification,
     AppListUpdated => "app/list/updated", Stable, Core, "v2::AppListUpdatedNotification", None, AppListUpdatedNotification,
+    FsChanged => "fs/changed", Stable, Core, "v2::FsChangedNotification", None, FsChangedNotification,
     ReasoningSummaryTextDelta => "item/reasoning/summaryTextDelta", Stable, Core, "v2::ReasoningSummaryTextDeltaNotification", None, ReasoningSummaryTextDeltaNotification,
     ReasoningSummaryPartAdded => "item/reasoning/summaryPartAdded", Stable, Core, "v2::ReasoningSummaryPartAddedNotification", None, ReasoningSummaryPartAddedNotification,
     ReasoningTextDelta => "item/reasoning/textDelta", Stable, Core, "v2::ReasoningTextDeltaNotification", None, ReasoningTextDeltaNotification,

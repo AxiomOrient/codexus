@@ -3,6 +3,8 @@ mod support;
 mod params_and_types;
 // Contract/integration: standalone command exec parity.
 mod command_exec;
+// Contract/integration: filesystem watch and feature enablement wrappers.
+mod fs_and_features;
 // Contract: RPC/thread API shape and policy boundaries.
 mod thread_api;
 // Integration: prompt-run lifecycle end-to-end behavior.

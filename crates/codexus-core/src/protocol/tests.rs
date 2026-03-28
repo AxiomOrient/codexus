@@ -3,7 +3,7 @@ use serde_json::json;
 use super::*;
 
 const VENDORED_COMMON_RS: &str = include_str!(
-    "../../protocol-inputs/openai/codex/527244910fb851cea6147334dbc08f8fbce4cb9d/codex-rs/app-server-protocol/src/protocol/common.rs"
+    "../../protocol-inputs/openai/codex/e39ddc61b14a8c645124f5d45ab912989a02e5fb/codex-rs/app-server-protocol/src/protocol/common.rs"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,12 +82,24 @@ fn inventory_exposes_protocol_surface() {
 
     assert_eq!(
         inventory.source_revision,
-        "openai/codex@527244910fb851cea6147334dbc08f8fbce4cb9d"
+        "openai/codex@e39ddc61b14a8c645124f5d45ab912989a02e5fb"
     );
     assert!(inventory
         .client_requests
         .iter()
         .any(|meta| meta.wire_name == methods::TURN_STEER));
+    assert!(inventory
+        .client_requests
+        .iter()
+        .any(|meta| meta.wire_name == methods::FS_WATCH));
+    assert!(inventory
+        .client_requests
+        .iter()
+        .any(|meta| meta.wire_name == methods::FS_UNWATCH));
+    assert!(inventory
+        .client_requests
+        .iter()
+        .any(|meta| meta.wire_name == methods::EXPERIMENTAL_FEATURE_ENABLEMENT_SET));
     assert!(inventory
         .server_requests
         .iter()
@@ -96,6 +108,10 @@ fn inventory_exposes_protocol_surface() {
         .server_notifications
         .iter()
         .any(|meta| meta.wire_name == methods::THREAD_REALTIME_OUTPUT_AUDIO_DELTA));
+    assert!(inventory
+        .server_notifications
+        .iter()
+        .any(|meta| meta.wire_name == methods::FS_CHANGED));
     assert!(inventory
         .client_notifications
         .iter()
@@ -256,6 +272,16 @@ fn stable_server_notifications_do_not_fall_back_to_unknown() {
             meta.wire_name
         );
     }
+}
+
+#[test]
+fn validation_accepts_chatgpt_device_code_login_shape() {
+    crate::runtime::rpc_contract::validate_rpc_request(
+        methods::ACCOUNT_LOGIN_START,
+        &json!({ "type": "chatgptDeviceCode" }),
+        crate::runtime::RpcValidationMode::KnownMethods,
+    )
+    .expect("chatgpt device code login params should validate");
 }
 
 #[test]

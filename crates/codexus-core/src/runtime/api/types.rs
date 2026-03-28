@@ -2,6 +2,8 @@
 //! Role-based files are split by concern while preserving the public API surface.
 
 mod command_exec;
+mod features;
+mod fs;
 mod input;
 mod policies;
 mod skills;
@@ -13,6 +15,12 @@ pub use command_exec::{
     CommandExecResizeParams, CommandExecResizeResponse, CommandExecResponse,
     CommandExecTerminalSize, CommandExecTerminateParams, CommandExecTerminateResponse,
     CommandExecWriteParams, CommandExecWriteResponse,
+};
+pub use features::{
+    ExperimentalFeatureEnablementSetParams, ExperimentalFeatureEnablementSetResponse,
+};
+pub use fs::{
+    FsChangedNotification, FsUnwatchParams, FsUnwatchResponse, FsWatchParams, FsWatchResponse,
 };
 pub use input::TextElement;
 pub use input::{ByteRange, InputItem, PromptAttachment, ThreadId, TurnId};

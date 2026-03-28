@@ -5,7 +5,9 @@ use crate::runtime::rpc_contract::methods;
 
 mod attachment_validation;
 mod command_exec_api;
+mod feature_api;
 mod flow;
+mod fs_api;
 mod models;
 mod prompt_run;
 mod thread_api;
@@ -43,8 +45,10 @@ pub use types::{
     ApprovalPolicy, ByteRange, CommandExecOutputDeltaNotification, CommandExecOutputStream,
     CommandExecParams, CommandExecResizeParams, CommandExecResizeResponse, CommandExecResponse,
     CommandExecTerminalSize, CommandExecTerminateParams, CommandExecTerminateResponse,
-    CommandExecWriteParams, CommandExecWriteResponse, ExternalNetworkAccess, InputItem,
-    Personality, PromptAttachment, ReasoningEffort, SandboxPolicy, SandboxPreset, ServiceTier,
+    CommandExecWriteParams, CommandExecWriteResponse, ExperimentalFeatureEnablementSetParams,
+    ExperimentalFeatureEnablementSetResponse, ExternalNetworkAccess, FsChangedNotification,
+    FsUnwatchParams, FsUnwatchResponse, FsWatchParams, FsWatchResponse, InputItem, Personality,
+    PromptAttachment, ReasoningEffort, SandboxPolicy, SandboxPreset, ServiceTier,
     SkillDependencies, SkillErrorInfo, SkillInterface, SkillMetadata, SkillScope,
     SkillToolDependency, SkillsListEntry, SkillsListExtraRootsForCwd, SkillsListParams,
     SkillsListResponse, TextElement, ThreadAgentMessageItemView, ThreadCommandExecutionItemView,

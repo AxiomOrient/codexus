@@ -45,6 +45,8 @@ Core capabilities:
 - run one prompt or many turns in one session
 - stream assistant output and turn lifecycle events
 - start, resume, read, list, archive, and interrupt threads and turns
+- watch filesystem paths and consume typed `fs/changed` notifications
+- patch runtime experimental feature enablement through the typed runtime surface
 - route typed server requests and approval flows
 - attach files and skills to runs
 - intercept lifecycle phases with hooks

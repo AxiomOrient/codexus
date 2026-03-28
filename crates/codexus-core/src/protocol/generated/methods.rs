@@ -30,6 +30,8 @@ pub const FS_GET_METADATA: &str = super::client_requests::FsGetMetadata::METHOD;
 pub const FS_READ_DIRECTORY: &str = super::client_requests::FsReadDirectory::METHOD;
 pub const FS_REMOVE: &str = super::client_requests::FsRemove::METHOD;
 pub const FS_COPY: &str = super::client_requests::FsCopy::METHOD;
+pub const FS_WATCH: &str = super::client_requests::FsWatch::METHOD;
+pub const FS_UNWATCH: &str = super::client_requests::FsUnwatch::METHOD;
 pub const SKILLS_CONFIG_WRITE: &str = super::client_requests::SkillsConfigWrite::METHOD;
 pub const PLUGIN_INSTALL: &str = super::client_requests::PluginInstall::METHOD;
 pub const PLUGIN_UNINSTALL: &str = super::client_requests::PluginUninstall::METHOD;
@@ -45,6 +47,8 @@ pub const THREAD_REALTIME_STOP: &str = super::client_requests::ThreadRealtimeSto
 pub const REVIEW_START: &str = super::client_requests::ReviewStart::METHOD;
 pub const MODEL_LIST: &str = super::client_requests::ModelList::METHOD;
 pub const EXPERIMENTAL_FEATURE_LIST: &str = super::client_requests::ExperimentalFeatureList::METHOD;
+pub const EXPERIMENTAL_FEATURE_ENABLEMENT_SET: &str =
+    super::client_requests::ExperimentalFeatureEnablementSet::METHOD;
 pub const COLLABORATION_MODE_LIST: &str = super::client_requests::CollaborationModeList::METHOD;
 pub const MOCK_EXPERIMENTAL_METHOD: &str = super::client_requests::MockExperimentalMethod::METHOD;
 pub const MCP_SERVER_OAUTH_LOGIN: &str = super::client_requests::McpServerOauthLogin::METHOD;
@@ -134,6 +138,7 @@ pub const ACCOUNT_UPDATED: &str = super::server_notifications::AccountUpdated::M
 pub const ACCOUNT_RATE_LIMITS_UPDATED: &str =
     super::server_notifications::AccountRateLimitsUpdated::METHOD;
 pub const APP_LIST_UPDATED: &str = super::server_notifications::AppListUpdated::METHOD;
+pub const FS_CHANGED: &str = super::server_notifications::FsChanged::METHOD;
 pub const ITEM_REASONING_SUMMARY_TEXT_DELTA: &str =
     super::server_notifications::ReasoningSummaryTextDelta::METHOD;
 pub const ITEM_REASONING_SUMMARY_PART_ADDED: &str =

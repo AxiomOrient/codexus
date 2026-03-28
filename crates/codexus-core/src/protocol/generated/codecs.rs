@@ -73,6 +73,7 @@ pub enum ServerNotificationEnvelope {
     AccountUpdated(AccountUpdatedNotification),
     AccountRateLimitsUpdated(AccountRateLimitsUpdatedNotification),
     AppListUpdated(AppListUpdatedNotification),
+    FsChanged(FsChangedNotification),
     ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification),
     ReasoningSummaryPartAdded(ReasoningSummaryPartAddedNotification),
     ReasoningTextDelta(ReasoningTextDeltaNotification),
@@ -310,6 +311,9 @@ pub fn decode_server_notification(
         "app/list/updated" => serde_json::from_value::<AppListUpdatedNotification>(params)
             .ok()
             .map(ServerNotificationEnvelope::AppListUpdated),
+        "fs/changed" => serde_json::from_value::<FsChangedNotification>(params)
+            .ok()
+            .map(ServerNotificationEnvelope::FsChanged),
         "item/reasoning/summaryTextDelta" => {
             serde_json::from_value::<ReasoningSummaryTextDeltaNotification>(params)
                 .ok()

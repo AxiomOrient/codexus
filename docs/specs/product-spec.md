@@ -56,8 +56,10 @@ For every client request:
 - result type
 - method spec
 - validation descriptor
-- high-level façade method
 - raw bridge
+
+Layer 3 ergonomic wrappers may expose only selected stable operations as long as Layer 2 remains
+protocol-complete.
 
 ### C. Typed server request routing
 For every server request:
@@ -226,7 +228,7 @@ Generated inventory used for parity tests.
 ## 6. Required method coverage
 
 ### 6.1 Stable client requests
-The product must provide first-class wrappers for all of the following.
+The product must provide first-class generated protocol representation for all of the following.
 
 ### Session / thread / turn
 - `initialize`
@@ -260,6 +262,8 @@ The product must provide first-class wrappers for all of the following.
 - `fs/readDirectory`
 - `fs/remove`
 - `fs/copy`
+- `fs/watch`
+- `fs/unwatch`
 - `skills/config/write`
 - `plugin/install`
 - `plugin/uninstall`
@@ -268,6 +272,7 @@ The product must provide first-class wrappers for all of the following.
 - `review/start`
 - `model/list`
 - `experimentalFeature/list`
+- `experimentalFeature/enablement/set`
 - `mcpServer/oauth/login`
 - `config/mcpServer/reload`
 - `mcpServerStatus/list`
@@ -355,6 +360,7 @@ Generate typed decoding for:
 - `thread/unarchived`
 - `thread/closed`
 - `skills/changed`
+- `fs/changed`
 - `thread/name/updated`
 - `thread/tokenUsage/updated`
 - `turn/started`
@@ -463,20 +469,24 @@ async fn request_typed<M: MethodSpec>(
 }
 ```
 
-### 10.2 Generated first-class facade methods
+### 10.2 Selected ergonomic facade methods
 
 ```rust
-impl AppServer {
-    async fn thread_start(&self, p: ThreadStartParams) -> Result<ThreadStartResponse>;
-    async fn thread_resume(&self, p: ThreadResumeParams) -> Result<ThreadResumeResponse>;
-    async fn thread_unsubscribe(&self, p: ThreadUnsubscribeParams) -> Result<ThreadUnsubscribeResponse>;
-    async fn thread_name_set(&self, p: ThreadNameSetParams) -> Result<ThreadNameSetResponse>;
-    async fn turn_steer(&self, p: TurnSteerParams) -> Result<TurnSteerResponse>;
-    async fn plugin_list(&self, p: PluginListParams) -> Result<PluginListResponse>;
-    async fn config_read(&self, p: ConfigReadParams) -> Result<ConfigReadResponse>;
-    // ... generated for all client requests
+impl Runtime {
+    async fn thread_start(&self, p: ThreadStartParams) -> Result<ThreadHandle>;
+    async fn thread_resume(&self, thread_id: &str, p: ThreadStartParams) -> Result<ThreadHandle>;
+    async fn command_exec(&self, p: CommandExecParams) -> Result<CommandExecResponse>;
+    async fn fs_watch(&self, p: FsWatchParams) -> Result<FsWatchResponse>;
+    async fn fs_unwatch(&self, p: FsUnwatchParams) -> Result<FsUnwatchResponse>;
+    async fn experimental_feature_enablement_set(
+        &self,
+        p: ExperimentalFeatureEnablementSetParams,
+    ) -> Result<ExperimentalFeatureEnablementSetResponse>;
 }
 ```
+
+`AppServer` remains the exact typed/raw JSON-RPC escape hatch and does not need one convenience
+method per client request.
 
 ### 10.3 Thread handle wrappers
 
