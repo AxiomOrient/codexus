@@ -4,14 +4,14 @@
 
 - Status: release contract
 - Audience: maintainers and release reviewers
-- Primary companion doc: `README.md`
+- Repository notice: `README.md`
 - Repository doc limit: `README.md` and this file only
 
 ## 1. Objective
 
 Build `codexus` around a **generated typed protocol core, thin runtime, and thin human layer** while preserving exact Codex AppServer JSON-RPC interoperability.
 
-This document is the release contract. `README.md` explains adoption and usage; this spec defines what must be true for release, packaging, and documentation parity.
+This document owns adoption, usage, and the release contract. It defines what must be true for release, packaging, and documentation parity. `README.md` contains only the approved usage notice and Axient Inc. copyright.
 
 ### Required properties
 1. Every upstream method has a first-class representation.
@@ -757,14 +757,14 @@ CI must fail if:
 - any stable method lacks first-class wrapper
 - any stable server request lacks router entry
 - any stable notification lacks typed decode entry
-- `README.md` and this spec disagree on public release gates or documentation scope
+- this spec disagrees with the public crate behavior, release verification entry points, or repository documentation scope
 
 ### Release artifact expectations
 
 A release candidate must ship with:
 - generated protocol output checked in under `crates/codexus-core/src/protocol/generated/`
 - upstream protocol inputs preserved under `crates/codexus-core/protocol-inputs/`
-- a `README.md` that matches the published crate behavior and examples
+- operator guidance in this specification that matches the published crate behavior and examples
 - this spec updated when release policy, required coverage, or documentation scope changes
 
 ---
@@ -826,7 +826,7 @@ The work is done only when all statements below are true.
 
 8. Human-facing repository docs stay limited to `README.md` and `docs/specs/product-spec.md`.
 
-9. `README.md` and this spec agree on:
+9. This spec's operator guidance and release contract agree on:
    - release gates
    - repository doc scope
    - the generated-core-first architecture
@@ -867,5 +867,121 @@ Release is acceptable only when all of the following are true:
 - `cargo clippy --workspace --all-targets -- -D warnings` passes
 - `cargo test --workspace` passes
 - ignored real-server tests are green in an approved environment
-- no secondary human-facing docs drift away from `README.md` and this spec
-- `README.md` examples and terminology match the published `codexus` crate surface
+- no secondary human-facing operational docs drift away from this spec
+- Operator examples and terminology in this specification match the published `codexus` crate surface
+
+## Requirements
+
+`codexus` talks to a local Codex CLI runtime by spawning `codex app-server`.
+
+Before integrating it:
+- install a compatible `codex` CLI on the host machine
+- ensure the runtime can launch `codex app-server` from the process environment
+- use Tokio, because the crate is async-first
+- provide an absolute working directory for prompt and session flows
+
+Default runtime behavior:
+
+| Setting | Default |
+|---------|---------|
+| approval | `never` |
+| sandbox | `read-only` |
+| effort | `medium` |
+| timeout | `120s` |
+| privileged escalation | `false` |
+
+## Quick Start
+
+Add the crate:
+
+```toml
+[dependencies]
+codexus = "1.1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+One prompt:
+
+```rust
+use codexus::quick_run;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let out = quick_run("/abs/path/workdir", "Summarize this repo in 3 bullets").await?;
+    println!("{}", out.assistant_text);
+    Ok(())
+}
+```
+
+Reusable session:
+
+```rust
+use codexus::runtime::{Client, SessionConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::connect_default().await?;
+    let session = client
+        .start_session(SessionConfig::new("/abs/path/workdir"))
+        .await?;
+
+    let out = session.ask("Summarize the current design").await?;
+    println!("{}", out.assistant_text);
+
+    session.close().await?;
+    client.shutdown().await?;
+    Ok(())
+}
+```
+
+Typed protocol bridge:
+
+```rust
+use codexus::protocol::client_requests::ThreadStart;
+use codexus::runtime::ClientConfig;
+use codexus::AppServer;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = AppServer::connect(ClientConfig::new()).await?;
+    let result = server
+        .request_typed::<ThreadStart>(json!({
+            "cwd": "/abs/path/workdir",
+            "approvalPolicy": "never",
+            "sandbox": "read-only"
+        }))
+        .await?;
+    println!("{}", result.thread.id);
+    server.shutdown().await?;
+    Ok(())
+}
+```
+
+## Release Model
+
+The repository is release-ready only when all of the following remain true:
+- generated protocol output matches the vendored upstream snapshot
+- the runtime remains a thin layer over the generated protocol surface
+- Operator examples and product spec claims still match the public crate behavior
+- CI continues to block drift in code generation, formatting, linting, and tests
+
+Minimum release verification:
+
+```bash
+cargo run -p xtask -- protocol-codegen-check
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Opt-in real-server coverage:
+
+```bash
+CODEX_RUNTIME_REAL_SERVER_APPROVED=1 \
+cargo test -p codexus ergonomic::tests::real_server:: -- --ignored --nocapture
+```
+
+## License
+
+MIT

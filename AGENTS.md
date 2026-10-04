@@ -1,6 +1,7 @@
 # Repository AGENTS
 
-This repository keeps human-facing documentation in `README.md` and `docs/`.
+This repository keeps operator guidance and the product contract in `docs/specs/product-spec.md`.
+The root `README.md` contains only the approved usage notice and Axient Inc. copyright.
 Do not create extra human-oriented layout documents unless explicitly requested.
 
 ## Root Layout
@@ -27,5 +28,5 @@ Treat `crates/codexus-core/src/protocol/generated/` as checked-in generated outp
 
 ## Documentation Placement
 
-- Human-facing docs belong in `docs/` or `README.md`.
+- Human-facing operational docs belong in `docs/`.
 - Agent-only repository structure and workflow rules belong in `AGENTS.md`.
