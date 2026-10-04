@@ -166,6 +166,12 @@ fn resolve_lock_created_unix_millis(path: &Path, metadata: &LockMetadata) -> Opt
 
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> Option<bool> {
+    // Only positive signed PIDs identify individual processes. The kill utility
+    // can truncate larger values into negative process-group selectors.
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Some(false);
+    }
+
     let status = Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
@@ -423,7 +429,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_pid_probe_returns_dead_for_nonexistent_process() {
-        // u32::MAX is not a valid PID on any unix system; kill -0 exits non-zero.
+        // Reject invalid PIDs before kill can truncate them into process-group selectors.
         assert_eq!(super::process_is_alive(u32::MAX), Some(false));
         // Dead owner status => reap immediately regardless of age.
         assert!(super::should_reap_lock(
@@ -432,5 +438,57 @@ mod tests {
             0,
             super::LOCK_STALE_FALLBACK_AGE,
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_pid_probe_rejects_zero_and_signed_overflow() {
+        for pid in [0, i32::MAX as u32 + 1, u32::MAX - 1] {
+            assert_eq!(super::process_is_alive(pid), Some(false), "PID {pid}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_pid_probe_returns_alive_for_current_process() {
+        assert_eq!(super::process_is_alive(std::process::id()), Some(true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_pid_probe_returns_dead_for_exited_process() {
+        let mut child = super::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn child");
+        let pid = child.id();
+        assert!(child.wait().expect("reap child").success());
+        assert_eq!(super::process_is_alive(pid), Some(false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_store_recovers_locks_with_invalid_owner_pids() {
+        let temp = crate::test_fixtures::TempDir::new("artifact_invalid_owner_pid");
+        let store = super::FsArtifactStore::new(&temp.root);
+        let artifact_id = "invalid-owner";
+        store
+            .ensure_artifact_dir(artifact_id)
+            .expect("create artifact directory");
+        let path = store.lock_path(artifact_id);
+
+        for pid in [0, i32::MAX as u32 + 1, u32::MAX] {
+            // Invalid owners are dead regardless of the lock's age.
+            super::fs::write(&path, format!("{pid}:{}\n", u64::MAX))
+                .expect("write invalid-owner lock");
+            let lock = store
+                .acquire_lock(artifact_id)
+                .expect("recover invalid-owner lock");
+            let raw = super::fs::read_to_string(&path).expect("read replacement lock");
+            let metadata = super::parse_lock_metadata(&raw).expect("parse replacement lock");
+            assert_eq!(metadata.pid, std::process::id());
+            drop(lock);
+            assert!(!path.exists());
+        }
     }
 }
